@@ -73,15 +73,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fred_api_key: str | None` — Optional FRED API key
 - `fred_rate_limit: int = 5` — FRED requests/second
 
+### Added - Dashboard & Polish (Sessions 14-17)
+
+#### Live Testing Fixes
+- Dark pool cache uses actual data date (from `executed_at`) as cache key, not `target_date`
+- US-only earnings filter: skip `.` suffix, leading digits, 5-char ending in F/Y (OTC foreign/ADR)
+- Pre-cap after Pass 1 before main fetch — avoids fetching hundreds of capped-out tickers
+- Streamlit `use_container_width=True` → `width="stretch"` deprecation fix
+
+#### IV Rank Integration
+- Replaced IV Skew with IV Rank (`iv_rank_1y` pre-computed by UW)
+- Scoring weight key updated: `iv_skew` → `iv_rank`
+- Cache layer loads `iv_rank` into processor
+
+#### UW Concurrency Control
+- `uw_concurrency` config option (default=3) with `asyncio.Semaphore` in Fetcher
+- Each ticker's 3 UW calls run sequentially within the semaphore slot
+
+#### Dashboard Enhancements
+- **Full Pipeline button** — `run_full_pipeline()` with `update_focus=True` for two-pass pipeline
+- **ETF-aware Focus Decomposition** — Bold own structural, dimmed other ETF structural
+- **FOCUS Regime Snapshot** on Historical Regimes page — color-coded regime + U percentile per FOCUS ticker
+- **FOCUS Z-Score Cross-Reference** on Drivers page — comparison grid of CORE vs FOCUS z-scores
+- `get_focus_diagnostics()` data layer helper with optional ETF filtering
+
 ### Testing
-- **80 new tests** (412 → 492 total)
+- **92 new tests** (412 → 504 total)
   - FRED client: 7 tests
   - FMP extensions: 8 tests
   - Structural module: 19 tests
-  - Events module: 24 tests
+  - Events module: 24 tests (incl. OTC filter tests)
   - UniverseManager extensions: 9 tests
-  - Orchestrator two-pass: 8 tests
+  - Orchestrator two-pass: 8 tests (incl. UW concurrency tests)
   - Dashboard data layer: 5 tests
+  - IV Rank + misc: 12 tests
 
 ---
 
@@ -278,14 +303,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Release Notes
 
-**0.2.0 (Current)**: Focus Universe — Two-pass pipeline (Phase 13)
+**0.2.0 (Current)**: Focus Universe + Dashboard polish (Sessions 13-17)
 - FRED client for macro event detection
 - Structural focus from ETF top-N holdings
 - Event focus from earnings, FOMC, CPI/NFP
 - Stress-based FOCUS promotion with 4 thresholds
 - 30-ticker cap with priority eviction
-- Dashboard Focus Decomposition panel
-- 492 tests passing
+- IV Rank (replaced IV Skew), UW concurrency control
+- ETF-aware Focus Decomposition, FOCUS Regime Snapshot, Z-Score Cross-Reference
+- 504 tests passing
 
 **0.1.0**: Full diagnostic engine with dashboard (Phases 1-12)
 - Baseline, Scoring, Classification, Explainability systems operational

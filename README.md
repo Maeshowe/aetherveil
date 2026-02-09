@@ -3,7 +3,7 @@
 **O**bservational **B**ehavioral **S**ystem for **I**nstitutional & **D**ealer-**I**nformed **A**nomaly **N**etworks — **M**arket **M**aker Regime Engine
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-492%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-504%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 
 > **Explainable microstructure diagnostics for retail quants**
@@ -55,8 +55,8 @@ Missing data → NaN. Never interpolated, imputed, or approximated.
 
 ```bash
 # Clone repository
-git clone https://github.com/aetherveil/obsidian-mm.git
-cd obsidian-mm
+git clone https://github.com/Maeshowe/aetherveil.git
+cd aetherveil
 
 # Create virtual environment
 python3.12 -m venv .venv
@@ -241,7 +241,7 @@ pytest tests/ --cov=obsidian --cov-report=html
 # - Dashboard (data layer): 5 tests
 # - Config: 7 tests
 # - Memory store: 18 tests
-# Total: 492 tests
+# Total: 504 tests
 ```
 
 ---
@@ -271,7 +271,7 @@ obsidian-mm/
 │       ├── clients/         # API clients (UW, Polygon, FMP, FRED)
 │       ├── config.py        # Settings
 │       └── cli.py           # CLI interface
-├── tests/                   # 492 tests
+├── tests/                   # 504 tests
 ├── reference/               # Specifications
 ├── memory/                  # Persistent memory system
 └── docs/                    # User and API documentation
@@ -326,7 +326,7 @@ obsidian-mm/
 
 ## Development Status
 
-### ✅ Completed (Phases 1-13)
+### ✅ Completed (v0.2.0)
 - [x] Config & secrets management
 - [x] API client layer (async, rate-limited)
 - [x] Parquet raw cache
@@ -347,7 +347,9 @@ obsidian-mm/
   - Stress-based promotion (U≥70, |Z_GEX|≥2.0, DarkShare≥0.65, |Z_block|≥2.0)
   - 30-ticker FOCUS cap with priority-based eviction
   - Dashboard Focus Decomposition panel
-- [x] Comprehensive test suite (492 tests)
+- [x] **Dashboard polish** — ETF-aware Focus Decomposition, FOCUS Regime Snapshot, Z-Score Cross-Reference
+- [x] IV Rank integration (replaced IV Skew), UW concurrency semaphore, OTC earnings filter
+- [x] Comprehensive test suite (504 tests)
 
 ### 📋 Planned
 - [ ] Regime Transition Matrix (RTM)
@@ -386,7 +388,7 @@ Inspired by market microstructure research and the need for transparent, explain
 
 For questions, support, or collaboration:
 - **Email**: [your-email@example.com]
-- **GitHub**: [https://github.com/aetherveil/obsidian-mm]
+- **GitHub**: [https://github.com/Maeshowe/aetherveil]
 - **Documentation**: [reference/OBSIDIAN_MM_SPEC.md](reference/OBSIDIAN_MM_SPEC.md)
 
 ---

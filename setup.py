@@ -4,7 +4,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="obsidian-mm",
-    version="0.1.0",
+    version="0.2.0",
     description="Market-Maker Regime Engine — Explainable microstructure diagnostics",
     author="AETHERVEIL",
     python_requires=">=3.12",
