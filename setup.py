@@ -9,7 +9,7 @@ setup(
     author="AETHERVEIL",
     python_requires=">=3.12",
     packages=find_packages(where="src", include=["obsidian*"]) + ["memory"],
-    package_dir={"": "src"},
+    package_dir={"": "src", "memory": "memory"},
     install_requires=[
         "httpx>=0.27.0",
         "pandas>=2.2.0",
