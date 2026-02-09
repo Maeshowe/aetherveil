@@ -1,0 +1,11 @@
+# MkDocs page ordering configuration
+# This ensures proper navigation structure
+
+title: Documentation
+nav:
+  - index.md
+  - quickstart.md
+  - installation.md
+  - USER_GUIDE.md
+  - API.md
+  - ...

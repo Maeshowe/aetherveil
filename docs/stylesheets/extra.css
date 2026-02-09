@@ -1,0 +1,19 @@
+/* Custom styles for OBSIDIAN MM documentation */
+
+.md-typeset h1 {
+    font-weight: 700;
+}
+
+.md-typeset code {
+    background-color: rgba(0, 0, 0, 0.05);
+    padding: 0.1em 0.3em;
+    border-radius: 0.2em;
+}
+
+/* Grid cards styling */
+.grid.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0;
+}

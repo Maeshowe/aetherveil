@@ -1,0 +1,196 @@
+# MkDocs Configuration for OBSIDIAN MM Documentation Site
+
+site_name: OBSIDIAN MM
+site_description: Market-Maker Regime Engine — Explainable microstructure diagnostics
+site_author: AETHERVEIL
+site_url: https://aetherveil.github.io/obsidian-mm/
+
+# Repository
+repo_name: aetherveil/obsidian-mm
+repo_url: https://github.com/aetherveil/obsidian-mm
+edit_uri: edit/main/docs/
+
+# Copyright
+copyright: Copyright &copy; 2026 AETHERVEIL
+
+# Theme Configuration
+theme:
+  name: material
+  language: en
+  palette:
+    # Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+  font:
+    text: Roboto
+    code: Roboto Mono
+
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - search.share
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/chart-line
+
+# Extensions
+markdown_extensions:
+  # Python Markdown
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+
+  # Python Markdown Extensions
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# Plugins
+plugins:
+  - search:
+      lang: en
+      separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: date
+  - minify:
+      minify_html: true
+
+# Extra
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/aetherveil/obsidian-mm
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/obsidian-mm/
+
+  version:
+    provider: mike
+    default: stable
+
+  analytics:
+    feedback:
+      title: Was this page helpful?
+      ratings:
+        - icon: material/thumb-up-outline
+          name: This page was helpful
+          data: 1
+          note: Thanks for your feedback!
+        - icon: material/thumb-down-outline
+          name: This page could be improved
+          data: 0
+          note: Thanks for your feedback!
+
+# Navigation Structure
+nav:
+  - Home:
+    - Overview: index.md
+    - Quick Start: quickstart.md
+    - Installation: installation.md
+    - What's New: CHANGELOG.md
+
+  - User Guide:
+    - Introduction: user-guide/index.md
+    - Running Diagnostics: user-guide/running-diagnostics.md
+    - Understanding Output: user-guide/understanding-output.md
+    - Regime Types: user-guide/regime-types.md
+    - Unusualness Scores: user-guide/unusualness-scores.md
+    - Limitations: user-guide/limitations.md
+    - FAQ: user-guide/faq.md
+
+  - Developer Guide:
+    - API Reference: api/index.md
+    - Baseline System: api/baseline.md
+    - Scoring System: api/scoring.md
+    - Classification: api/classification.md
+    - Explainability: api/explainability.md
+    - Configuration: api/configuration.md
+    - Error Handling: api/error-handling.md
+
+  - Examples:
+    - Overview: examples/index.md
+    - Basic Diagnostic: examples/basic-diagnostic.md
+    - Batch Processing: examples/batch-processing.md
+    - Custom Analysis: examples/custom-analysis.md
+
+  - Specification:
+    - Technical Spec: spec/technical-spec.md
+    - Architecture: spec/architecture.md
+    - Design Principles: spec/design-principles.md
+    - Feature Catalog: spec/features.md
+
+  - Contributing:
+    - How to Contribute: CONTRIBUTING.md
+    - Code Standards: contributing/code-standards.md
+    - Testing Guide: contributing/testing.md
+    - Documentation: contributing/documentation.md
+
+  - About:
+    - Project Vision: about/vision.md
+    - License: about/license.md
+    - Acknowledgments: about/acknowledgments.md
+
+# Extra CSS/JS
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js

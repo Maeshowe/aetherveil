@@ -1,0 +1,425 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// © Order Flow Anomaly Indicator v3.0
+
+//@version=6
+indicator("Order Flow Anomaly v3", shorttitle="OFA3", overlay=false, precision=2)
+
+// ============================================================================
+// VERSION 3 ENHANCEMENTS
+// ============================================================================
+//
+// 1. ANOMALY (not magnitude): Score measures statistical rarity, not strength
+//
+// 2. MULTIPLICATIVE LOGIC: Both volume AND direction must be anomalous
+//
+// 3. ADAPTIVE THRESHOLDS: Percentile-based, auto-calibrates per TF
+//
+// 4. STATE MACHINE: Explicit regime transitions
+//    NEUTRAL → EXPANSION → EXTREME → REVERSION → NEUTRAL
+//
+// 5. VALIDITY SCORE: Direction ≠ Tradability
+//    - Position in range (not buying at top)
+//    - Volatility context (compression vs expansion)
+//    - Provides "quality" overlay on directional signal
+//
+// INTERPRETATION:
+// - OFA Score: How anomalous is current flow? (direction + magnitude)
+// - Validity: Is this anomaly tradeable given context? (0-100%)
+// - State: What regime are we in? (timing entries/exits)
+//
+// ============================================================================
+
+// ============================================================================
+// MODULE 1: INPUTS
+// ============================================================================
+
+string g_look = "Lookback Settings"
+int imbalance_period = input.int(20, "Imbalance Lookback", minval=5, maxval=200, group=g_look)
+int zscore_period = input.int(50, "Z-Score Lookback", minval=20, maxval=500, group=g_look)
+int seasonality_period = input.int(20, "Seasonality Lookback (days)", minval=5, maxval=100, group=g_look)
+int adaptive_period = input.int(100, "Adaptive Threshold Lookback", minval=50, maxval=500, group=g_look)
+
+string g_seas = "Seasonality"
+string bucket_option = input.string("15", "Time Bucket (min)", options=["1", "5", "15", "30", "60"], group=g_seas)
+int bucket_minutes = str.tonumber(bucket_option) > 0 ? int(str.tonumber(bucket_option)) : 15
+bool use_seasonality = input.bool(true, "Enable Seasonality", group=g_seas)
+
+string g_anom = "Anomaly Detection"
+float vol_weight = input.float(0.5, "Volume Anomaly Weight", minval=0.0, maxval=1.0, step=0.1, group=g_anom)
+float dir_weight = input.float(0.5, "Direction Anomaly Weight", minval=0.0, maxval=1.0, step=0.1, group=g_anom)
+bool use_mult = input.bool(true, "Multiplicative Mode", tooltip="Both anomalies required", group=g_anom)
+float anom_gate = input.float(1.0, "Anomaly Gate (σ)", minval=0.5, maxval=2.0, step=0.25, group=g_anom)
+
+string g_adapt = "Adaptive Thresholds"
+bool use_adaptive = input.bool(true, "Use Adaptive Thresholds", group=g_adapt)
+float alert_pct = input.float(90.0, "Alert Percentile", minval=80.0, maxval=99.0, group=g_adapt)
+float extreme_pct = input.float(97.0, "Extreme Percentile", minval=90.0, maxval=99.9, group=g_adapt)
+float fixed_alert = input.float(2.0, "Fixed Alert", minval=1.0, maxval=4.0, group=g_adapt)
+float fixed_extreme = input.float(3.0, "Fixed Extreme", minval=2.0, maxval=5.0, group=g_adapt)
+
+string g_valid = "Validity Filters"
+bool use_validity = input.bool(true, "Enable Validity Score", tooltip="Assess tradability of signal", group=g_valid)
+int range_period = input.int(20, "Range Lookback", minval=10, maxval=100, tooltip="For position-in-range calculation", group=g_valid)
+int vol_context_period = input.int(20, "Volatility Context Period", minval=10, maxval=100, group=g_valid)
+float range_edge_penalty = input.float(0.3, "Range Edge Penalty", minval=0.0, maxval=1.0, step=0.1, tooltip="Penalty when at range extremes", group=g_valid)
+float vol_compress_penalty = input.float(0.2, "Vol Compression Penalty", minval=0.0, maxval=1.0, step=0.1, tooltip="Penalty during low volatility", group=g_valid)
+
+string g_state = "State Machine"
+bool use_states = input.bool(true, "Enable State Machine", group=g_state)
+int state_smooth = input.int(3, "State Smoothing", minval=1, maxval=10, group=g_state)
+
+string g_smooth = "Smoothing"
+bool use_smooth = input.bool(true, "Enable Smoothing", group=g_smooth)
+int smooth_len = input.int(3, "Smooth Length", minval=1, maxval=10, group=g_smooth)
+
+string g_viz = "Visualization"
+bool show_hist = input.bool(true, "Show Histogram", group=g_viz)
+bool show_validity = input.bool(true, "Show Validity Bar", group=g_viz)
+bool show_bands = input.bool(true, "Show Adaptive Bands", group=g_viz)
+bool show_components = input.bool(false, "Show Components", group=g_viz)
+color c_bull = input.color(color.new(color.teal, 20), "Accumulation", group=g_viz)
+color c_bear = input.color(color.new(color.red, 20), "Distribution", group=g_viz)
+color c_neut = input.color(color.new(color.gray, 50), "Neutral", group=g_viz)
+color c_ext_bull = input.color(color.new(color.lime, 0), "Extreme Accum", group=g_viz)
+color c_ext_bear = input.color(color.new(color.maroon, 0), "Extreme Dist", group=g_viz)
+
+// ============================================================================
+// MODULE 2: CONSTANTS
+// ============================================================================
+
+var float EPS = 1e-10
+var int MINS_DAY = 1440
+int tf_mins = timeframe.isdaily ? 1440 : timeframe.isweekly ? 10080 : timeframe.ismonthly ? 43200 : timeframe.multiplier
+int bars_day = int(math.ceil(MINS_DAY / math.max(1, tf_mins)))
+
+// ============================================================================
+// MODULE 3: CORE CALCULATIONS
+// ============================================================================
+
+// Signed volume
+float candle_dir = close > open ? 1.0 : close < open ? -1.0 : (close > close[1] ? 1.0 : -1.0)
+float signed_vol = volume * candle_dir
+
+// Imbalance
+float sum_signed = math.sum(signed_vol, imbalance_period)
+float sum_total = math.sum(volume, imbalance_period)
+float imbalance = sum_signed / (sum_total + EPS)
+float imb_clamped = math.max(-1.0, math.min(1.0, imbalance))
+
+// Seasonality
+int max_look = int(math.min(seasonality_period, math.floor(bar_index / math.max(1, bars_day))))
+var float seas_sum = 0.0
+var int seas_cnt = 0
+seas_sum := 0.0
+seas_cnt := 0
+for i = 1 to 50
+    if i <= max_look
+        int off = i * bars_day
+        if off < bar_index and off > 0
+            float hv = volume[off]
+            if not na(hv) and hv > 0
+                seas_sum += hv
+                seas_cnt += 1
+float seas_avg = seas_cnt > 0 ? seas_sum / float(seas_cnt) : volume
+float vol_sma = ta.sma(volume, zscore_period)
+float vol_norm = na(vol_sma) ? 1.0 : (use_seasonality and seas_avg > EPS ? volume / seas_avg : volume / (vol_sma + EPS))
+
+// Z-score function
+zscore(float val, int per) =>
+    float mu = ta.sma(val, per)
+    float sig = ta.stdev(val, per)
+    sig > EPS ? (val - mu) / sig : 0.0
+
+// Activity anomaly (unsigned - how unusual is volume)
+float z_vol = zscore(vol_norm, zscore_period)
+float activity_anom = math.abs(z_vol)
+
+// Direction anomaly (signed - how unusual is imbalance)
+float direction_anom = zscore(imb_clamped, zscore_period)
+
+// ============================================================================
+// MODULE 4: COMPOSITE SCORE
+// ============================================================================
+
+float w_total = vol_weight + dir_weight + EPS
+float w_v = vol_weight / w_total
+float w_d = dir_weight / w_total
+
+float composite_raw = 0.0
+if use_mult
+    float act_gate = activity_anom > anom_gate ? activity_anom : 0.0
+    float dir_gate = math.abs(direction_anom) > anom_gate ? math.abs(direction_anom) : 0.0
+    if act_gate > 0 and dir_gate > 0
+        float mag = math.sqrt(act_gate * dir_gate)
+        float sign = direction_anom > 0 ? 1.0 : -1.0
+        composite_raw := sign * mag
+    else
+        composite_raw := direction_anom * 0.3
+else
+    float signed_act = z_vol > 0 ? activity_anom : -activity_anom
+    composite_raw := w_v * signed_act + w_d * direction_anom
+
+float ofa_score = use_smooth ? ta.ema(composite_raw, smooth_len) : composite_raw
+
+// ============================================================================
+// MODULE 5: ADAPTIVE THRESHOLDS
+// ============================================================================
+
+float abs_score = math.abs(ofa_score)
+float adapt_alert = ta.percentile_linear_interpolation(abs_score, adaptive_period, alert_pct)
+float adapt_extreme = ta.percentile_linear_interpolation(abs_score, adaptive_period, extreme_pct)
+adapt_alert := math.max(adapt_alert, 0.5)
+adapt_extreme := math.max(adapt_extreme, adapt_alert + 0.5)
+
+float thresh_alert = use_adaptive ? adapt_alert : fixed_alert
+float thresh_extreme = use_adaptive ? adapt_extreme : fixed_extreme
+
+// ============================================================================
+// MODULE 6: VALIDITY SCORE (0-100)
+// ============================================================================
+//
+// Validity answers: "Given this anomaly, is it tradeable?"
+//
+// Components:
+// 1. Position in Range: Buying at range top = bad, buying at range bottom = good
+// 2. Volatility Context: Compression = uncertain, expansion = clearer
+// 3. Direction Alignment: (could add HTF trend later)
+//
+// Output: 0-100 where 100 = highly tradeable, 0 = avoid
+// ============================================================================
+
+// Position in range (0 = bottom, 1 = top)
+float range_high = ta.highest(high, range_period)
+float range_low = ta.lowest(low, range_period)
+float range_size = range_high - range_low
+float pos_in_range = range_size > EPS ? (close - range_low) / range_size : 0.5
+
+// Volatility context (ATR ratio to recent average)
+float atr_val = ta.atr(vol_context_period)
+float atr_avg = ta.sma(atr_val, vol_context_period * 2)
+float vol_ratio = atr_avg > EPS ? atr_val / atr_avg : 1.0
+bool is_vol_compressed = vol_ratio < 0.7
+bool is_vol_expanded = vol_ratio > 1.3
+
+// Calculate validity score
+float validity = 100.0
+
+if use_validity
+    // Penalty for being at wrong range extreme
+    // If bullish signal at range top -> penalty
+    // If bearish signal at range bottom -> penalty
+    bool bullish_signal = ofa_score > 0
+    bool bearish_signal = ofa_score < 0
+
+    float range_penalty = 0.0
+    if bullish_signal and pos_in_range > 0.8
+        range_penalty := range_edge_penalty * 100 * (pos_in_range - 0.8) / 0.2
+    else if bearish_signal and pos_in_range < 0.2
+        range_penalty := range_edge_penalty * 100 * (0.2 - pos_in_range) / 0.2
+
+    // Penalty for volatility compression (uncertain breakout direction)
+    float vol_penalty = is_vol_compressed ? vol_compress_penalty * 100 : 0.0
+
+    // Bonus for volatility expansion (clearer moves)
+    float vol_bonus = is_vol_expanded ? 10.0 : 0.0
+
+    validity := math.max(0.0, math.min(100.0, 100.0 - range_penalty - vol_penalty + vol_bonus))
+
+// ============================================================================
+// MODULE 7: STATE MACHINE
+// ============================================================================
+//
+// States: NEUTRAL(0) → EXPANSION(1/-1) → EXTREME(2/-2) → REVERSION(3/-3) → NEUTRAL
+//
+// Transitions:
+// - NEUTRAL → EXPANSION: Score crosses alert threshold
+// - EXPANSION → EXTREME: Score crosses extreme threshold
+// - EXTREME → REVERSION: Score drops from extreme but still above alert
+// - REVERSION → NEUTRAL: Score drops below alert threshold
+// - Any → NEUTRAL: Score in neutral zone
+//
+// Special: EXPANSION can go directly to NEUTRAL if score drops fast
+// ============================================================================
+
+// State codes:
+// 0 = NEUTRAL
+// 1 = EXPANSION_BULL, -1 = EXPANSION_BEAR
+// 2 = EXTREME_BULL, -2 = EXTREME_BEAR
+// 3 = REVERSION_BULL, -3 = REVERSION_BEAR
+
+var int state = 0
+var int prev_state_val = 0
+float smoothed_score = ta.ema(ofa_score, state_smooth)
+
+if use_states
+    prev_state_val := state
+
+    // Determine current zone
+    bool in_neutral = math.abs(smoothed_score) < thresh_alert
+    bool in_expansion_bull = smoothed_score >= thresh_alert and smoothed_score < thresh_extreme
+    bool in_expansion_bear = smoothed_score <= -thresh_alert and smoothed_score > -thresh_extreme
+    bool in_extreme_bull = smoothed_score >= thresh_extreme
+    bool in_extreme_bear = smoothed_score <= -thresh_extreme
+
+    // State transitions
+    if in_neutral
+        state := 0
+    else if in_extreme_bull
+        if state == 2
+            state := 2  // Stay extreme
+        else
+            state := 2  // Enter extreme
+    else if in_extreme_bear
+        if state == -2
+            state := -2
+        else
+            state := -2
+    else if in_expansion_bull
+        if state == 2
+            state := 3  // Was extreme, now reverting
+        else if state == 3 and smoothed_score < smoothed_score[1]
+            state := 3  // Continue reversion
+        else
+            state := 1  // Normal expansion
+    else if in_expansion_bear
+        if state == -2
+            state := -3
+        else if state == -3 and smoothed_score > smoothed_score[1]
+            state := -3
+        else
+            state := -1
+else
+    state := 0
+    prev_state_val := 0
+
+bool state_changed = state != prev_state_val
+
+// State labels for display
+state_label(int s) =>
+    s == 0 ? "NEUTRAL" : s == 1 ? "EXPANSION ↑" : s == -1 ? "EXPANSION ↓" : s == 2 ? "EXTREME ↑↑" : s == -2 ? "EXTREME ↓↓" : s == 3 ? "REVERSION ↑" : s == -3 ? "REVERSION ↓" : "?"
+
+// ============================================================================
+// MODULE 8: ZONE CLASSIFICATION
+// ============================================================================
+
+bool is_ext_accum = ofa_score >= thresh_extreme
+bool is_accum = ofa_score >= thresh_alert and ofa_score < thresh_extreme
+bool is_neutral = math.abs(ofa_score) < thresh_alert
+bool is_dist = ofa_score <= -thresh_alert and ofa_score > -thresh_extreme
+bool is_ext_dist = ofa_score <= -thresh_extreme
+
+color bar_col = is_ext_accum ? c_ext_bull : is_accum ? c_bull : is_ext_dist ? c_ext_bear : is_dist ? c_bear : c_neut
+
+// Validity-adjusted color (fade if low validity)
+float validity_alpha = use_validity ? math.round(100 - validity * 0.7) : 20
+color bar_col_valid = color.new(bar_col, int(validity_alpha))
+
+// ============================================================================
+// MODULE 9: VISUALIZATION
+// ============================================================================
+
+hline(0, "Zero", color.gray, hline.style_solid)
+
+// Adaptive bands
+plot(show_bands and use_adaptive ? thresh_alert : na, "+Alert", color.new(color.green, 70), style=plot.style_stepline)
+plot(show_bands and use_adaptive ? -thresh_alert : na, "-Alert", color.new(color.red, 70), style=plot.style_stepline)
+plot(show_bands and use_adaptive ? thresh_extreme : na, "+Extreme", color.new(color.lime, 80), style=plot.style_stepline)
+plot(show_bands and use_adaptive ? -thresh_extreme : na, "-Extreme", color.new(color.maroon, 80), style=plot.style_stepline)
+
+hline(2.0, "+2σ", color.new(color.gray, 90), hline.style_dotted)
+hline(-2.0, "-2σ", color.new(color.gray, 90), hline.style_dotted)
+
+// Background
+color bg = is_ext_accum ? color.new(color.lime, 92) : is_ext_dist ? color.new(color.maroon, 92) : na
+bgcolor(bg)
+
+// State change markers
+plotshape(state_changed and state > 0, "Bull State", shape.triangleup, location.bottom, color.new(color.green, 30), size=size.tiny)
+plotshape(state_changed and state < 0, "Bear State", shape.triangledown, location.top, color.new(color.red, 30), size=size.tiny)
+plotshape(state_changed and state == 0, "Neutral", shape.circle, location.absolute, color.new(color.gray, 30), size=size.tiny)
+
+// Main histogram (with validity-adjusted transparency)
+plot(show_hist ? ofa_score : na, "OFA Score", color=bar_col_valid, style=plot.style_histogram, linewidth=3)
+
+// Score line
+plot(ofa_score, "Score Line", color=bar_col, linewidth=2)
+
+// Validity bar (separate mini-histogram at bottom)
+float validity_plot = show_validity ? (validity / 100 - 0.5) * 0.5 : na
+color validity_col = validity > 70 ? color.new(color.green, 50) : validity > 40 ? color.new(color.yellow, 50) : color.new(color.red, 50)
+plot(validity_plot, "Validity", color=validity_col, style=plot.style_columns, linewidth=2)
+
+// Components
+plot(show_components ? activity_anom : na, "Activity", color.new(color.blue, 50), linewidth=1)
+plot(show_components ? direction_anom : na, "Direction", color.new(color.purple, 50), linewidth=1)
+
+// ============================================================================
+// MODULE 10: ALERTS
+// ============================================================================
+
+bool a_accum = ta.crossover(ofa_score, thresh_alert) and barstate.isconfirmed
+bool a_dist = ta.crossunder(ofa_score, -thresh_alert) and barstate.isconfirmed
+bool a_ext_buy = ta.crossover(ofa_score, thresh_extreme) and barstate.isconfirmed
+bool a_ext_sell = ta.crossunder(ofa_score, -thresh_extreme) and barstate.isconfirmed
+bool a_state = state_changed and barstate.isconfirmed
+bool a_high_valid = validity > 80 and math.abs(ofa_score) > thresh_alert and barstate.isconfirmed
+
+alertcondition(a_accum, "Accumulation", "OFA3: Accumulation zone")
+alertcondition(a_dist, "Distribution", "OFA3: Distribution zone")
+alertcondition(a_ext_buy, "Extreme Buy", "OFA3: EXTREME accumulation")
+alertcondition(a_ext_sell, "Extreme Sell", "OFA3: EXTREME distribution")
+alertcondition(a_state, "State Change", "OFA3: State transition")
+alertcondition(a_high_valid, "High Validity Signal", "OFA3: High validity anomaly detected")
+
+// ============================================================================
+// MODULE 11: INFO TABLE
+// ============================================================================
+
+var table tbl = table.new(position.top_right, 2, 11, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    table.cell(tbl, 0, 0, "OFA Score", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 0, str.tostring(ofa_score, "#.##"), text_color=bar_col, text_size=size.small)
+
+    table.cell(tbl, 0, 1, "Activity σ", text_color=color.white, text_size=size.small)
+    color ac = activity_anom > anom_gate ? color.yellow : color.gray
+    table.cell(tbl, 1, 1, str.tostring(activity_anom, "#.##"), text_color=ac, text_size=size.small)
+
+    table.cell(tbl, 0, 2, "Direction σ", text_color=color.white, text_size=size.small)
+    color dc = direction_anom > 0 ? color.green : color.red
+    table.cell(tbl, 1, 2, str.tostring(direction_anom, "#.##"), text_color=dc, text_size=size.small)
+
+    table.cell(tbl, 0, 3, "Imbalance", text_color=color.white, text_size=size.small)
+    color ic = imb_clamped > 0 ? color.green : color.red
+    table.cell(tbl, 1, 3, str.tostring(imb_clamped * 100, "#.#") + "%", text_color=ic, text_size=size.small)
+
+    table.cell(tbl, 0, 4, "Validity", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 4, str.tostring(validity, "#") + "%", text_color=validity_col, text_size=size.small)
+
+    table.cell(tbl, 0, 5, "Range Pos", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 5, str.tostring(pos_in_range * 100, "#") + "%", text_color=color.gray, text_size=size.small)
+
+    table.cell(tbl, 0, 6, "Vol Context", text_color=color.white, text_size=size.small)
+    string vc_txt = is_vol_compressed ? "COMPRESSED" : is_vol_expanded ? "EXPANDED" : "Normal"
+    color vc_col = is_vol_compressed ? color.orange : is_vol_expanded ? color.green : color.gray
+    table.cell(tbl, 1, 6, vc_txt, text_color=vc_col, text_size=size.small)
+
+    table.cell(tbl, 0, 7, "Alert ±", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 7, str.tostring(thresh_alert, "#.##"), text_color=color.gray, text_size=size.small)
+
+    table.cell(tbl, 0, 8, "Extreme ±", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 8, str.tostring(thresh_extreme, "#.##"), text_color=color.gray, text_size=size.small)
+
+    table.cell(tbl, 0, 9, "State", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 9, state_label(state), text_color=bar_col, text_size=size.small)
+
+    string mode = use_mult ? "MULT" : "ADD"
+    string adapt = use_adaptive ? "ADAPT" : "FIXED"
+    string valid_mode = use_validity ? "VAL" : "-"
+    table.cell(tbl, 0, 10, "Mode", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 10, mode + "/" + adapt + "/" + valid_mode, text_color=color.gray, text_size=size.small)
+
+// ============================================================================
+// END v3
+// ============================================================================

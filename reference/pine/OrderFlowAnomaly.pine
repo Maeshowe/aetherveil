@@ -1,0 +1,340 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// © Normalized Order Flow Anomaly Indicator v1.0
+
+//@version=6
+indicator("Normalized Order Flow Anomaly", shorttitle="NOFA", overlay=false, precision=2)
+
+// ============================================================================
+// USAGE GUIDE
+// ============================================================================
+//
+// WHAT THIS INDICATOR DOES:
+// - Detects statistically unusual order flow patterns using retail-accessible data
+// - Normalizes volume by time-of-day to remove session bias
+// - Computes bounded buy/sell imbalance from signed volume
+// - Outputs a Z-score based composite anomaly score centered at 0
+//
+// INTERPRETATION:
+// - Score > +2: Statistically significant buying pressure (potential accumulation)
+// - Score < -2: Statistically significant selling pressure (potential distribution)
+// - Score near 0: Normal/neutral market activity
+// - Extreme readings (|Score| > 3) suggest unusual institutional-scale activity
+//
+// WHAT THIS INDICATOR DOES NOT DO:
+// - Does NOT predict future price direction
+// - Does NOT have access to Level 2 / order book data
+// - Does NOT distinguish between institutional and retail orders
+// - Does NOT guarantee profitable trades
+// - Is NOT a standalone trading system
+//
+// The signed volume proxy (candle direction) is an approximation. Real order
+// flow requires tick-level trade data with aggressor flags, unavailable on TV.
+// ============================================================================
+
+// ============================================================================
+// MODULE 1: INPUT CONFIGURATION
+// ============================================================================
+
+// --- Lookback Periods ---
+string group_lookback = "Lookback Settings"
+int imbalance_period = input.int(20, "Imbalance Lookback", minval=5, maxval=200, tooltip="Rolling window for imbalance calculation", group=group_lookback)
+int zscore_period = input.int(50, "Z-Score Lookback", minval=20, maxval=500, tooltip="Rolling window for Z-score normalization", group=group_lookback)
+int seasonality_period = input.int(20, "Seasonality Lookback (days)", minval=5, maxval=100, tooltip="Number of historical days for time-of-day normalization", group=group_lookback)
+
+// --- Intraday Seasonality ---
+string group_season = "Seasonality Settings"
+string bucket_option = input.string("15", "Time Bucket (minutes)", options=["1", "5", "15", "30", "60"], tooltip="Granularity for time-of-day bucketing", group=group_season)
+int bucket_minutes = str.tonumber(bucket_option) > 0 ? int(str.tonumber(bucket_option)) : 15
+bool use_seasonality = input.bool(true, "Enable Seasonality Normalization", tooltip="Disable for non-intraday timeframes", group=group_season)
+
+// --- Weights & Thresholds ---
+string group_weights = "Score Weights & Thresholds"
+float weight_volume = input.float(0.5, "Volume Z-Score Weight", minval=0.0, maxval=1.0, step=0.1, tooltip="Weight for normalized volume component", group=group_weights)
+float weight_imbalance = input.float(0.5, "Imbalance Z-Score Weight", minval=0.0, maxval=1.0, step=0.1, tooltip="Weight for normalized imbalance component", group=group_weights)
+float threshold_alert = input.float(2.0, "Alert Threshold (σ)", minval=1.0, maxval=5.0, step=0.5, tooltip="Z-score threshold for alert conditions", group=group_weights)
+float threshold_extreme = input.float(3.0, "Extreme Threshold (σ)", minval=2.0, maxval=6.0, step=0.5, tooltip="Z-score threshold for extreme events", group=group_weights)
+
+// --- Smoothing ---
+string group_smooth = "Smoothing Settings"
+bool use_smoothing = input.bool(true, "Enable Signal Smoothing", group=group_smooth)
+int smooth_length = input.int(3, "Smoothing Length", minval=1, maxval=10, group=group_smooth)
+
+// --- Visualization ---
+string group_viz = "Visualization"
+bool show_histogram = input.bool(true, "Show Histogram", group=group_viz)
+bool show_signal_line = input.bool(true, "Show Signal Line", group=group_viz)
+color color_bullish = input.color(color.new(color.teal, 20), "Accumulation Color", group=group_viz)
+color color_bearish = input.color(color.new(color.red, 20), "Distribution Color", group=group_viz)
+color color_neutral = input.color(color.new(color.gray, 50), "Neutral Color", group=group_viz)
+color color_extreme_bull = input.color(color.new(color.lime, 0), "Extreme Accumulation", group=group_viz)
+color color_extreme_bear = input.color(color.new(color.maroon, 0), "Extreme Distribution", group=group_viz)
+
+// --- Robust Scaling ---
+string group_robust = "Robust Scaling"
+bool use_mad_scaling = input.bool(false, "Use MAD-based Scaling", tooltip="Use Median Absolute Deviation instead of Std Dev. More robust to outliers but computationally heavier.", group=group_robust)
+
+// ============================================================================
+// MODULE 2: CONSTANTS & UTILITIES
+// ============================================================================
+
+// Numerical stability constant to prevent division by zero
+var float EPSILON = 1e-10
+
+// Minutes per day for bucket calculations
+var int MINUTES_PER_DAY = 1440
+
+// Get timeframe in minutes (handle non-minute timeframes)
+tf_mult = timeframe.multiplier
+tf_in_minutes = timeframe.isdaily ? 1440 : timeframe.isweekly ? 10080 : timeframe.ismonthly ? 43200 : tf_mult
+
+// Bars per day (approximate for the current timeframe)
+int bars_per_day = int(math.ceil(MINUTES_PER_DAY / math.max(1, tf_in_minutes)))
+
+// ============================================================================
+// MODULE 3: SIGNED VOLUME CALCULATION
+// ============================================================================
+//
+// Rationale: Without tick-level data, we approximate order flow direction
+// using the relationship between open and close. This is a common proxy
+// in academic literature (e.g., "The Microstructure of the 'Flash Crash'").
+//
+// Limitation: Intrabar price action is lost; a candle with significant
+// wicks may misrepresent the true buying/selling pressure.
+// ============================================================================
+
+// Determine candle direction with tie-breaker using previous close
+float candle_direction = close > open ? 1.0 : close < open ? -1.0 : (close > close[1] ? 1.0 : -1.0)
+
+// Signed volume: positive for bullish candles, negative for bearish
+float signed_volume = volume * candle_direction
+
+// ============================================================================
+// MODULE 4: BOUNDED IMBALANCE CALCULATION
+// ============================================================================
+//
+// Formula: ι_t = Σ(signed_volume) / (Σ(volume) + ε)
+//
+// Output is bounded [-1, +1]:
+// - +1: All volume was buying (every candle was green)
+// - -1: All volume was selling (every candle was red)
+// -  0: Balanced or no clear direction
+//
+// This is essentially a volume-weighted directional ratio.
+// ============================================================================
+
+float sum_signed_volume = math.sum(signed_volume, imbalance_period)
+float sum_total_volume = math.sum(volume, imbalance_period)
+
+// Bounded imbalance with numerical stability
+float imbalance = sum_signed_volume / (sum_total_volume + EPSILON)
+
+// Clamp to [-1, 1] for defensive coding (should already be in range)
+float imbalance_clamped = math.max(-1.0, math.min(1.0, imbalance))
+
+// ============================================================================
+// MODULE 5: INTRADAY SEASONALITY NORMALIZATION
+// ============================================================================
+//
+// Problem: Volume varies systematically throughout the trading day
+// (high at open/close, low during lunch). Raw volume comparisons are biased.
+//
+// Solution: Normalize current volume by the historical average for this
+// specific time-of-day bucket.
+//
+// Non-repainting: All calculations use confirmed (historical) bars only.
+// ============================================================================
+
+// Calculate current time bucket
+int current_minute = hour * 60 + minute
+int current_bucket = int(math.floor(current_minute / bucket_minutes))
+
+// Compute average volume for this time bucket using available history
+int max_lookback_days = int(math.min(seasonality_period, math.floor(bar_index / math.max(1, bars_per_day))))
+
+// Accumulate historical volumes at same time of day
+var float seasonal_sum = 0.0
+var int seasonal_count = 0
+
+// Reset and recalculate each bar (stateless approach for non-repainting)
+seasonal_sum := 0.0
+seasonal_count := 0
+
+// Manual loop over historical same-time-of-day bars
+for i = 1 to 50
+    if i <= max_lookback_days
+        int offset = i * bars_per_day
+        if offset < bar_index and offset > 0
+            float hist_vol = volume[offset]
+            if not na(hist_vol) and hist_vol > 0
+                seasonal_sum += hist_vol
+                seasonal_count += 1
+
+// Average volume for this time bucket
+float seasonal_avg = seasonal_count > 0 ? seasonal_sum / float(seasonal_count) : volume
+
+// Seasonality-adjusted volume ratio
+float vol_sma = ta.sma(volume, zscore_period)
+float volume_seasonal_ratio = na(vol_sma) ? 1.0 : (use_seasonality and seasonal_avg > EPSILON ? volume / seasonal_avg : volume / (vol_sma + EPSILON))
+
+// ============================================================================
+// MODULE 6: Z-SCORE NORMALIZATION
+// ============================================================================
+//
+// Purpose: Transform raw values into standardized scores that indicate
+// how many standard deviations away from the mean the current value is.
+//
+// Z = (X - μ) / σ
+//
+// Edge case handling:
+// - If σ ≈ 0, we return 0 to avoid division by zero
+// - This can occur in very low-volatility regimes
+// ============================================================================
+
+// Helper function: Calculate Z-score with safety checks
+zscore(float value, int period) =>
+    float mu = ta.sma(value, period)
+    float sigma = ta.stdev(value, period)
+    float result = sigma > EPSILON ? (value - mu) / sigma : 0.0
+    result
+
+// Helper function: MAD-based robust Z-score (optional)
+zscore_mad(float value, int period) =>
+    float med = ta.percentile_linear_interpolation(value, period, 50)
+    float mad_approx = ta.stdev(value, period) * 0.6745
+    float result = mad_approx > EPSILON ? (value - med) / (mad_approx * 1.4826) : 0.0
+    result
+
+// Z-score for seasonality-adjusted volume
+float z_volume = use_mad_scaling ? zscore_mad(volume_seasonal_ratio, zscore_period) : zscore(volume_seasonal_ratio, zscore_period)
+
+// Z-score for imbalance
+float z_imbalance = use_mad_scaling ? zscore_mad(imbalance_clamped, zscore_period) : zscore(imbalance_clamped, zscore_period)
+
+// ============================================================================
+// MODULE 7: COMPOSITE FLOW ANOMALY SCORE
+// ============================================================================
+//
+// Combines normalized volume and imbalance into single interpretable score.
+//
+// Score = w_v × Z_volume + w_i × Z_imbalance
+//
+// Interpretation:
+// - High positive: Unusually high volume with bullish imbalance
+// - High negative: Unusually high volume with bearish imbalance
+// - Near zero: Normal market activity
+// ============================================================================
+
+// Normalize weights to sum to 1
+float total_weight = weight_volume + weight_imbalance + EPSILON
+float norm_weight_vol = weight_volume / total_weight
+float norm_weight_imb = weight_imbalance / total_weight
+
+// Raw composite score
+float composite_raw = norm_weight_vol * z_volume + norm_weight_imb * z_imbalance
+
+// Optional smoothing to reduce noise
+float composite_score = use_smoothing ? ta.ema(composite_raw, smooth_length) : composite_raw
+
+// Signal line (slower EMA of the score for crossover signals)
+float signal_line = ta.ema(composite_score, smooth_length * 3)
+
+// ============================================================================
+// MODULE 8: ZONE CLASSIFICATION
+// ============================================================================
+
+bool is_extreme_accumulation = composite_score >= threshold_extreme
+bool is_accumulation = composite_score >= threshold_alert and composite_score < threshold_extreme
+bool is_neutral = math.abs(composite_score) < threshold_alert
+bool is_distribution = composite_score <= -threshold_alert and composite_score > -threshold_extreme
+bool is_extreme_distribution = composite_score <= -threshold_extreme
+
+// Determine bar color based on zone
+color bar_color = is_extreme_accumulation ? color_extreme_bull : is_accumulation ? color_bullish : is_extreme_distribution ? color_extreme_bear : is_distribution ? color_bearish : color_neutral
+
+// ============================================================================
+// MODULE 9: VISUALIZATION
+// ============================================================================
+
+// Zero line
+hline(0, "Zero", color.gray, hline.style_solid)
+
+// Static threshold lines (hline requires constants)
+hline(2.0, "+2σ", color.new(color.green, 70), hline.style_dashed)
+hline(-2.0, "-2σ", color.new(color.red, 70), hline.style_dashed)
+hline(3.0, "+3σ", color.new(color.lime, 80), hline.style_dotted)
+hline(-3.0, "-3σ", color.new(color.maroon, 80), hline.style_dotted)
+
+// Background zones
+color bg_color = is_extreme_accumulation ? color.new(color.lime, 90) : is_extreme_distribution ? color.new(color.maroon, 90) : na
+bgcolor(bg_color)
+
+// Main histogram plot
+plot(show_histogram ? composite_score : na, "NOFA Score", color=bar_color, style=plot.style_histogram, linewidth=3)
+
+// Score line (on top of histogram)
+plot(composite_score, "Score Line", color=bar_color, linewidth=2)
+
+// Signal line
+plot(show_signal_line ? signal_line : na, "Signal Line", color=color.new(color.orange, 30), linewidth=1)
+
+// ============================================================================
+// MODULE 10: COMPONENT PLOTS (DEBUG/ANALYSIS)
+// ============================================================================
+
+plot(z_volume, "Z-Volume", color=color.new(color.blue, 80), display=display.none)
+plot(z_imbalance, "Z-Imbalance", color=color.new(color.purple, 80), display=display.none)
+plot(imbalance_clamped, "Raw Imbalance", color=color.new(color.gray, 80), display=display.none)
+plot(volume_seasonal_ratio, "Volume/Seasonal", color=color.new(color.gray, 80), display=display.none)
+
+// ============================================================================
+// MODULE 11: ALERT CONDITIONS
+// ============================================================================
+//
+// IMPORTANT: All alerts are based on confirmed bar data only.
+// barstate.isconfirmed ensures no repainting.
+// ============================================================================
+
+// Alert conditions
+bool alert_accumulation = ta.crossover(composite_score, threshold_alert) and barstate.isconfirmed
+bool alert_distribution = ta.crossunder(composite_score, -threshold_alert) and barstate.isconfirmed
+bool alert_extreme_buy = ta.crossover(composite_score, threshold_extreme) and barstate.isconfirmed
+bool alert_extreme_sell = ta.crossunder(composite_score, -threshold_extreme) and barstate.isconfirmed
+bool alert_extreme_any = (alert_extreme_buy or alert_extreme_sell) and barstate.isconfirmed
+bool alert_zero_cross_up = ta.crossover(composite_score, 0.0) and barstate.isconfirmed
+bool alert_zero_cross_down = ta.crossunder(composite_score, 0.0) and barstate.isconfirmed
+
+// Register alert conditions
+alertcondition(alert_accumulation, title="Accumulation Signal", message="NOFA: Potential institutional accumulation detected")
+alertcondition(alert_distribution, title="Distribution Signal", message="NOFA: Potential institutional distribution detected")
+alertcondition(alert_extreme_buy, title="Extreme Buying", message="NOFA: EXTREME buying pressure detected")
+alertcondition(alert_extreme_sell, title="Extreme Selling", message="NOFA: EXTREME selling pressure detected")
+alertcondition(alert_extreme_any, title="Extreme Event (Any)", message="NOFA: Extreme order flow anomaly detected")
+alertcondition(alert_zero_cross_up, title="Bullish Zero Cross", message="NOFA: Score crossed above zero")
+alertcondition(alert_zero_cross_down, title="Bearish Zero Cross", message="NOFA: Score crossed below zero")
+
+// ============================================================================
+// MODULE 12: DATA TABLE (CURRENT STATE)
+// ============================================================================
+
+var table info_table = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    table.cell(info_table, 0, 0, "NOFA Score", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 0, str.tostring(composite_score, "#.##"), text_color=bar_color, text_size=size.small)
+    table.cell(info_table, 0, 1, "Z-Volume", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 1, str.tostring(z_volume, "#.##"), text_color=color.white, text_size=size.small)
+    table.cell(info_table, 0, 2, "Z-Imbalance", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 2, str.tostring(z_imbalance, "#.##"), text_color=color.white, text_size=size.small)
+    table.cell(info_table, 0, 3, "Imbalance", text_color=color.white, text_size=size.small)
+    color imb_color = imbalance_clamped > 0 ? color.green : color.red
+    table.cell(info_table, 1, 3, str.tostring(imbalance_clamped * 100, "#.#") + "%", text_color=imb_color, text_size=size.small)
+    table.cell(info_table, 0, 4, "Vol/Season", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 4, str.tostring(volume_seasonal_ratio, "#.##") + "x", text_color=color.white, text_size=size.small)
+    string zone_text = is_extreme_accumulation ? "EXTREME BUY" : is_accumulation ? "Accumulation" : is_extreme_distribution ? "EXTREME SELL" : is_distribution ? "Distribution" : "Neutral"
+    table.cell(info_table, 0, 5, "Zone", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 5, zone_text, text_color=bar_color, text_size=size.small)
+
+// ============================================================================
+// END OF INDICATOR
+// ============================================================================

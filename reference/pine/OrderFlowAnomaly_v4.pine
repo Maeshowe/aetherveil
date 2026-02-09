@@ -1,0 +1,557 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// © Order Flow Anomaly Indicator v4.0 - Interpretation Layer
+
+//@version=6
+indicator("Order Flow Anomaly v4", shorttitle="OFA4", overlay=false, precision=2, max_labels_count=50)
+
+// ============================================================================
+// PHILOSOPHY
+// ============================================================================
+//
+// "The most important information is often what does NOT happen,
+//  despite strong flow."
+//
+// This indicator helps traders interpret market INTENT, not predict direction.
+// It answers questions like:
+// - "Is this absorption?" (flow without follow-through)
+// - "Is this distribution?" (efficiency declining)
+// - "Is this market maker control?" (no directional commitment)
+// - "Should I avoid trading here?" (NO-TRADE zone)
+//
+// WHAT THIS INDICATOR DOES:
+// - Makes absorption, distribution, and MM activity visible
+// - Provides textual interpretation labels
+// - Explicitly marks conditions where trading should be avoided
+// - Helps discretionary traders read market intent
+//
+// WHAT THIS INDICATOR DOES NOT DO:
+// - Generate buy/sell signals
+// - Suggest direction or predict moves
+// - Provide entry/exit points
+// - Replace trader judgment
+//
+// This is a PURE INTERPRETATION TOOL for informed decision-making.
+// ============================================================================
+
+// ============================================================================
+// MODULE 1: INPUTS
+// ============================================================================
+
+string g_core = "Core Settings"
+int imbalance_period = input.int(20, "Imbalance Lookback", minval=5, maxval=200, group=g_core)
+int zscore_period = input.int(50, "Z-Score Lookback", minval=20, maxval=500, group=g_core)
+int seasonality_period = input.int(20, "Seasonality Lookback (days)", minval=5, maxval=100, group=g_core)
+int adaptive_period = input.int(100, "Adaptive Threshold Lookback", minval=50, maxval=500, group=g_core)
+
+string g_seas = "Seasonality"
+string bucket_option = input.string("15", "Time Bucket (min)", options=["1", "5", "15", "30", "60"], group=g_seas)
+int bucket_minutes = str.tonumber(bucket_option) > 0 ? int(str.tonumber(bucket_option)) : 15
+bool use_seasonality = input.bool(true, "Enable Seasonality", group=g_seas)
+
+string g_anom = "Anomaly Detection"
+float anom_gate = input.float(1.0, "Anomaly Gate (σ)", minval=0.5, maxval=2.0, step=0.25, group=g_anom)
+bool use_mult = input.bool(true, "Multiplicative Mode", group=g_anom)
+
+string g_adapt = "Thresholds"
+bool use_adaptive = input.bool(true, "Use Adaptive Thresholds", group=g_adapt)
+float alert_pct = input.float(90.0, "Alert Percentile", minval=80.0, maxval=99.0, group=g_adapt)
+float extreme_pct = input.float(97.0, "Extreme Percentile", minval=90.0, maxval=99.9, group=g_adapt)
+float fixed_alert = input.float(2.0, "Fixed Alert", minval=1.0, maxval=4.0, group=g_adapt)
+float fixed_extreme = input.float(3.0, "Fixed Extreme", minval=2.0, maxval=5.0, group=g_adapt)
+
+string g_interp = "Interpretation Settings"
+int absorption_lookback = input.int(5, "Absorption Lookback", minval=3, maxval=20, tooltip="Bars to assess flow persistence vs price response", group=g_interp)
+float absorption_threshold = input.float(0.3, "Absorption Sensitivity", minval=0.1, maxval=0.8, step=0.1, tooltip="Lower = more sensitive to absorption detection", group=g_interp)
+int distribution_lookback = input.int(8, "Distribution Lookback", minval=3, maxval=20, tooltip="Bars to assess flow decay pattern", group=g_interp)
+int chop_lookback = input.int(12, "Chop Detection Lookback", minval=5, maxval=30, tooltip="Bars to assess oscillation pattern", group=g_interp)
+int chop_crosses = input.int(3, "Chop Min Crosses", minval=2, maxval=10, tooltip="Minimum zero-crosses to flag chop", group=g_interp)
+float price_response_min = input.float(0.5, "Min Expected Price Response", minval=0.1, maxval=2.0, step=0.1, tooltip="ATR multiplier - expected price move per unit flow", group=g_interp)
+
+string g_labels = "Label Settings"
+bool show_labels = input.bool(true, "Show Interpretation Labels", group=g_labels)
+bool show_notrade = input.bool(true, "Show No-Trade Warnings", group=g_labels)
+int label_offset = input.int(2, "Label Vertical Offset", minval=0, maxval=10, group=g_labels)
+color label_absorption = input.color(color.new(color.orange, 0), "Absorption Label Color", group=g_labels)
+color label_distribution = input.color(color.new(color.purple, 0), "Distribution Label Color", group=g_labels)
+color label_chop = input.color(color.new(color.gray, 0), "Chop Zone Label Color", group=g_labels)
+color label_notrade = input.color(color.new(color.red, 0), "No-Trade Label Color", group=g_labels)
+
+string g_smooth = "Smoothing"
+bool use_smooth = input.bool(true, "Enable Smoothing", group=g_smooth)
+int smooth_len = input.int(3, "Smooth Length", minval=1, maxval=10, group=g_smooth)
+
+string g_viz = "Visualization"
+bool show_hist = input.bool(true, "Show Histogram", group=g_viz)
+bool show_bands = input.bool(true, "Show Adaptive Bands", group=g_viz)
+bool show_interp_bg = input.bool(true, "Show Interpretation Background", group=g_viz)
+color c_bull = input.color(color.new(color.teal, 20), "Accumulation", group=g_viz)
+color c_bear = input.color(color.new(color.red, 20), "Distribution", group=g_viz)
+color c_neut = input.color(color.new(color.gray, 50), "Neutral", group=g_viz)
+
+// ============================================================================
+// MODULE 2: CONSTANTS & UTILITIES
+// ============================================================================
+
+var float EPS = 1e-10
+var int MINS_DAY = 1440
+int tf_mins = timeframe.isdaily ? 1440 : timeframe.isweekly ? 10080 : timeframe.ismonthly ? 43200 : timeframe.multiplier
+int bars_day = int(math.ceil(MINS_DAY / math.max(1, tf_mins)))
+
+// Z-score function
+zscore(float val, int per) =>
+    float mu = ta.sma(val, per)
+    float sig = ta.stdev(val, per)
+    sig > EPS ? (val - mu) / sig : 0.0
+
+// ============================================================================
+// MODULE 3: CORE FLOW CALCULATIONS (from v3)
+// ============================================================================
+
+// Signed volume & imbalance
+float candle_dir = close > open ? 1.0 : close < open ? -1.0 : (close > close[1] ? 1.0 : -1.0)
+float signed_vol = volume * candle_dir
+float sum_signed = math.sum(signed_vol, imbalance_period)
+float sum_total = math.sum(volume, imbalance_period)
+float imbalance = sum_signed / (sum_total + EPS)
+float imb_clamped = math.max(-1.0, math.min(1.0, imbalance))
+
+// Seasonality normalization
+int max_look = int(math.min(seasonality_period, math.floor(bar_index / math.max(1, bars_day))))
+var float seas_sum = 0.0
+var int seas_cnt = 0
+seas_sum := 0.0
+seas_cnt := 0
+for i = 1 to 50
+    if i <= max_look
+        int off = i * bars_day
+        if off < bar_index and off > 0
+            float hv = volume[off]
+            if not na(hv) and hv > 0
+                seas_sum += hv
+                seas_cnt += 1
+float seas_avg = seas_cnt > 0 ? seas_sum / float(seas_cnt) : volume
+float vol_sma = ta.sma(volume, zscore_period)
+float vol_norm = na(vol_sma) ? 1.0 : (use_seasonality and seas_avg > EPS ? volume / seas_avg : volume / (vol_sma + EPS))
+
+// Anomaly scores
+float z_vol = zscore(vol_norm, zscore_period)
+float activity_anom = math.abs(z_vol)
+float direction_anom = zscore(imb_clamped, zscore_period)
+
+// Composite score
+float composite_raw = 0.0
+if use_mult
+    float act_gate = activity_anom > anom_gate ? activity_anom : 0.0
+    float dir_gate = math.abs(direction_anom) > anom_gate ? math.abs(direction_anom) : 0.0
+    if act_gate > 0 and dir_gate > 0
+        composite_raw := (direction_anom > 0 ? 1.0 : -1.0) * math.sqrt(act_gate * dir_gate)
+    else
+        composite_raw := direction_anom * 0.3
+else
+    composite_raw := 0.5 * (z_vol > 0 ? activity_anom : -activity_anom) + 0.5 * direction_anom
+
+float ofa_score = use_smooth ? ta.ema(composite_raw, smooth_len) : composite_raw
+
+// Adaptive thresholds
+float abs_score = math.abs(ofa_score)
+float adapt_alert = ta.percentile_linear_interpolation(abs_score, adaptive_period, alert_pct)
+float adapt_extreme = ta.percentile_linear_interpolation(abs_score, adaptive_period, extreme_pct)
+adapt_alert := math.max(adapt_alert, 0.5)
+adapt_extreme := math.max(adapt_extreme, adapt_alert + 0.5)
+float thresh_alert = use_adaptive ? adapt_alert : fixed_alert
+float thresh_extreme = use_adaptive ? adapt_extreme : fixed_extreme
+
+// ============================================================================
+// MODULE 4: PRICE RESPONSE METRICS
+// ============================================================================
+//
+// Key insight: Flow without price response = absorption
+// We measure how much price SHOULD have moved given the flow intensity
+// vs how much it ACTUALLY moved.
+// ============================================================================
+
+// ATR for normalizing price moves
+float atr = ta.atr(14)
+float atr_avg = ta.sma(atr, 50)
+
+// Price change over lookback (normalized by ATR)
+float price_change_abs = math.abs(close - close[absorption_lookback])
+float price_change_norm = atr_avg > EPS ? price_change_abs / atr_avg : 0.0
+
+// Cumulative absolute flow over lookback
+float cum_flow_abs = math.sum(math.abs(ofa_score), absorption_lookback)
+
+// Flow efficiency: how much price moved per unit of flow
+// Low efficiency = absorption (flow blocked)
+// High efficiency = clean directional move
+float flow_efficiency = cum_flow_abs > EPS ? price_change_norm / cum_flow_abs : 1.0
+
+// Expected vs actual price response
+float expected_response = cum_flow_abs * price_response_min
+bool price_underperformed = price_change_norm < expected_response * absorption_threshold
+
+// ============================================================================
+// MODULE 5: ABSORPTION DETECTION
+// ============================================================================
+//
+// ABSORPTION = persistent flow anomaly + price fails to expand
+//
+// Interpretation: "Liquidity is absorbing aggressive orders"
+// This is NOT bullish or bearish - it means directional intent is being blocked.
+//
+// Key pattern:
+// - Flow has been consistently strong (one direction)
+// - Price hasn't moved proportionally
+// - Suggests hidden liquidity / institutional absorption
+// ============================================================================
+
+// Check if flow has been persistently extreme
+float avg_score_recent = ta.sma(math.abs(ofa_score), absorption_lookback)
+bool flow_persistent = avg_score_recent > thresh_alert * 0.7
+
+// Check directional consistency (not oscillating)
+float score_stdev = ta.stdev(ofa_score, absorption_lookback)
+float score_mean = ta.sma(ofa_score, absorption_lookback)
+bool directionally_consistent = math.abs(score_mean) > score_stdev * 0.5
+
+// ABSORPTION STATE
+bool is_absorption = flow_persistent and directionally_consistent and price_underperformed
+
+// Determine absorption type for context (not signal!)
+string absorption_context = ""
+if is_absorption
+    if score_mean > 0
+        absorption_context := "BUY flow absorbed"
+    else
+        absorption_context := "SELL flow absorbed"
+
+// ============================================================================
+// MODULE 6: DISTRIBUTION DETECTION
+// ============================================================================
+//
+// DISTRIBUTION = flow weakening while price stays elevated/depressed
+//
+// Interpretation: "Efficiency declining - supply/demand appearing"
+// This is process awareness, NOT reversal prediction.
+//
+// Key pattern:
+// - Flow was strong, now decaying
+// - Price hasn't pulled back proportionally
+// - Suggests smart money activity (distributing into strength/weakness)
+// ============================================================================
+
+// Flow decay: was stronger, now weaker
+float flow_earlier = ta.sma(math.abs(ofa_score[distribution_lookback]), 3)
+float flow_recent = ta.sma(math.abs(ofa_score), 3)
+bool flow_decaying = flow_earlier > thresh_alert * 0.8 and flow_recent < flow_earlier * 0.6
+
+// Price stability despite flow decay
+float price_earlier = close[distribution_lookback]
+float price_recent = close
+float price_move_during_decay = math.abs(price_recent - price_earlier)
+float expected_reversion = atr_avg * 0.5
+bool price_stable_despite_decay = price_move_during_decay < expected_reversion
+
+// Flow efficiency trend (declining = distribution)
+float efficiency_earlier = nz(flow_efficiency[distribution_lookback], 1.0)
+bool efficiency_declining = flow_efficiency < efficiency_earlier * 0.7
+
+// DISTRIBUTION STATE
+bool is_distribution = flow_decaying and (price_stable_despite_decay or efficiency_declining)
+
+// Distribution context
+string distribution_context = ""
+if is_distribution
+    if score_mean > 0
+        distribution_context := "Supply appearing at highs"
+    else
+        distribution_context := "Demand appearing at lows"
+
+// ============================================================================
+// MODULE 7: MARKET MAKER CONTROL / CHOP DETECTION
+// ============================================================================
+//
+// CHOP = oscillating flow + no persistence + range-bound price
+//
+// Interpretation: "No directional commitment - inventory management"
+// This is a NO-TRADE zone.
+//
+// Key pattern:
+// - Flow crosses zero multiple times
+// - No sustained direction
+// - Price range is compressed
+// - Breakout attempts fail
+// ============================================================================
+
+// Count zero-line crosses
+var int cross_count = 0
+cross_count := 0
+for i = 0 to chop_lookback - 1
+    if (ofa_score[i] > 0 and ofa_score[i+1] <= 0) or (ofa_score[i] < 0 and ofa_score[i+1] >= 0)
+        cross_count += 1
+
+bool many_crosses = cross_count >= chop_crosses
+
+// Flow persistence (low = choppy)
+float flow_persistence = math.abs(math.sum(ofa_score, chop_lookback)) / (math.sum(math.abs(ofa_score), chop_lookback) + EPS)
+bool low_persistence = flow_persistence < 0.3
+
+// Price range compression
+float range_high = ta.highest(high, chop_lookback)
+float range_low = ta.lowest(low, chop_lookback)
+float range_size = range_high - range_low
+float expected_range = atr_avg * chop_lookback * 0.5
+bool range_compressed = range_size < expected_range
+
+// CHOP STATE (Market Maker Control)
+bool is_chop = many_crosses and low_persistence and range_compressed
+
+// ============================================================================
+// MODULE 8: NO-TRADE ZONE DETECTION
+// ============================================================================
+//
+// NO-TRADE = conditions where trading should be avoided
+//
+// This is one of the MOST IMPORTANT outputs.
+// We explicitly mark:
+// - Extreme flow with no price response (trap potential)
+// - Conflicting interpretation states
+// - Low interpretability / unclear regime
+// ============================================================================
+
+// Condition 1: Extreme flow, no price response (high trap potential)
+bool extreme_flow_no_response = math.abs(ofa_score) > thresh_extreme and price_underperformed
+
+// Condition 2: Multiple conflicting states
+int state_count = (is_absorption ? 1 : 0) + (is_distribution ? 1 : 0) + (is_chop ? 1 : 0)
+bool conflicting_states = state_count >= 2
+
+// Condition 3: Very low flow efficiency (blocked moves)
+bool very_low_efficiency = flow_efficiency < 0.1 and cum_flow_abs > thresh_alert
+
+// Condition 4: Chop zone (already identified)
+bool is_chop_notrade = is_chop
+
+// Combined NO-TRADE condition
+bool is_notrade = extreme_flow_no_response or conflicting_states or very_low_efficiency or is_chop_notrade
+
+// Determine specific warning
+string notrade_reason = ""
+if is_notrade
+    if extreme_flow_no_response
+        notrade_reason := "Flow-Price mismatch"
+    else if conflicting_states
+        notrade_reason := "Conflicting signals"
+    else if very_low_efficiency
+        notrade_reason := "Blocked directional move"
+    else if is_chop_notrade
+        notrade_reason := "No directional commitment"
+
+// ============================================================================
+// MODULE 9: INTERPRETATION STATE SUMMARY
+// ============================================================================
+
+// Priority: NO-TRADE > ABSORPTION > DISTRIBUTION > CHOP > NORMAL
+var string interpretation_state = "NORMAL"
+var string interpretation_detail = ""
+
+if is_notrade
+    interpretation_state := "NO-TRADE"
+    interpretation_detail := notrade_reason
+else if is_absorption
+    interpretation_state := "ABSORPTION"
+    interpretation_detail := absorption_context
+else if is_distribution
+    interpretation_state := "DISTRIBUTION"
+    interpretation_detail := distribution_context
+else if is_chop
+    interpretation_state := "MM CONTROL"
+    interpretation_detail := "Inventory mgmt"
+else
+    interpretation_state := "NORMAL"
+    interpretation_detail := math.abs(ofa_score) > thresh_alert ? (ofa_score > 0 ? "Bullish flow" : "Bearish flow") : "Neutral flow"
+
+// ============================================================================
+// MODULE 10: ZONE CLASSIFICATION (for coloring)
+// ============================================================================
+
+bool is_ext_bull = ofa_score >= thresh_extreme
+bool is_bull = ofa_score >= thresh_alert and ofa_score < thresh_extreme
+bool is_neutral = math.abs(ofa_score) < thresh_alert
+bool is_bear = ofa_score <= -thresh_alert and ofa_score > -thresh_extreme
+bool is_ext_bear = ofa_score <= -thresh_extreme
+
+color base_col = is_ext_bull ? color.lime : is_bull ? c_bull : is_ext_bear ? color.maroon : is_bear ? c_bear : c_neut
+
+// Modify color based on interpretation
+color bar_col = base_col
+if is_notrade
+    bar_col := color.new(color.red, 50)
+else if is_absorption
+    bar_col := color.new(label_absorption, 30)
+else if is_chop
+    bar_col := color.new(label_chop, 40)
+
+// ============================================================================
+// MODULE 11: VISUALIZATION
+// ============================================================================
+
+// Zero line
+hline(0, "Zero", color.gray, hline.style_solid)
+
+// Adaptive bands
+plot(show_bands and use_adaptive ? thresh_alert : na, "+Alert", color.new(color.green, 70), style=plot.style_stepline)
+plot(show_bands and use_adaptive ? -thresh_alert : na, "-Alert", color.new(color.red, 70), style=plot.style_stepline)
+plot(show_bands and use_adaptive ? thresh_extreme : na, "+Extreme", color.new(color.lime, 80), style=plot.style_stepline)
+plot(show_bands and use_adaptive ? -thresh_extreme : na, "-Extreme", color.new(color.maroon, 80), style=plot.style_stepline)
+
+// Reference lines
+hline(2.0, "+2σ", color.new(color.gray, 90), hline.style_dotted)
+hline(-2.0, "-2σ", color.new(color.gray, 90), hline.style_dotted)
+
+// Interpretation background
+color interp_bg = na
+if show_interp_bg
+    if is_notrade
+        interp_bg := color.new(color.red, 92)
+    else if is_absorption
+        interp_bg := color.new(label_absorption, 92)
+    else if is_chop
+        interp_bg := color.new(label_chop, 94)
+    else if is_distribution
+        interp_bg := color.new(label_distribution, 94)
+bgcolor(interp_bg)
+
+// Main histogram
+plot(show_hist ? ofa_score : na, "OFA Score", color=bar_col, style=plot.style_histogram, linewidth=3)
+
+// Score line
+plot(ofa_score, "Score Line", color=bar_col, linewidth=2)
+
+// Flow efficiency plot (helps visualize absorption)
+plot(flow_efficiency, "Flow Efficiency", color=color.new(color.yellow, 70), style=plot.style_line, linewidth=1)
+
+// ============================================================================
+// MODULE 12: INTERPRETATION LABELS
+// ============================================================================
+//
+// Labels provide textual interpretation directly on the chart.
+// They answer: "What is happening?" not "What should I do?"
+//
+// Labels are shown sparingly to avoid clutter:
+// - On state CHANGES (not every bar)
+// - On significant events
+// ============================================================================
+
+// Track state changes for label placement
+var string prev_interp_state = "NORMAL"
+bool state_changed = interpretation_state != prev_interp_state
+prev_interp_state := interpretation_state
+
+// Label positioning
+float label_y_up = ofa_score + label_offset * 0.5
+float label_y_down = ofa_score - label_offset * 0.5
+bool label_above = ofa_score > 0
+
+// Create labels on state changes
+if show_labels and state_changed and barstate.isconfirmed
+    string label_text = ""
+    color label_col = color.white
+
+    if interpretation_state == "NO-TRADE"
+        label_text := "⚠ NO-TRADE\n" + interpretation_detail
+        label_col := label_notrade
+    else if interpretation_state == "ABSORPTION"
+        label_text := "◉ ABSORPTION\n" + interpretation_detail
+        label_col := label_absorption
+    else if interpretation_state == "DISTRIBUTION"
+        label_text := "◎ DISTRIBUTION\n" + interpretation_detail
+        label_col := label_distribution
+    else if interpretation_state == "MM CONTROL"
+        label_text := "≋ MM CONTROL\n" + interpretation_detail
+        label_col := label_chop
+
+    if label_text != ""
+        if label_above
+            label.new(bar_index, label_y_up, label_text, xloc.bar_index, yloc.price, label_col, label.style_label_down, color.white, size.small)
+        else
+            label.new(bar_index, label_y_down, label_text, xloc.bar_index, yloc.price, label_col, label.style_label_up, color.white, size.small)
+
+// Persistent NO-TRADE warning (show periodically during no-trade zones)
+var int notrade_label_counter = 0
+if is_notrade
+    notrade_label_counter += 1
+else
+    notrade_label_counter := 0
+
+// Show reminder label every N bars during no-trade zone
+if show_notrade and is_notrade and notrade_label_counter % 10 == 1 and barstate.isconfirmed and notrade_label_counter > 1
+    if label_above
+        label.new(bar_index, label_y_up, "⚠ NO-TRADE", xloc.bar_index, yloc.price, color.new(label_notrade, 30), label.style_label_down, color.white, size.tiny)
+    else
+        label.new(bar_index, label_y_down, "⚠ NO-TRADE", xloc.bar_index, yloc.price, color.new(label_notrade, 30), label.style_label_up, color.white, size.tiny)
+
+// ============================================================================
+// MODULE 13: ALERT CONDITIONS
+// ============================================================================
+
+alertcondition(state_changed and interpretation_state == "ABSORPTION" and barstate.isconfirmed, "Absorption Detected", "OFA4: ABSORPTION - Flow without follow-through")
+alertcondition(state_changed and interpretation_state == "DISTRIBUTION" and barstate.isconfirmed, "Distribution Detected", "OFA4: DISTRIBUTION - Efficiency declining")
+alertcondition(state_changed and interpretation_state == "MM CONTROL" and barstate.isconfirmed, "MM Control Detected", "OFA4: MARKET MAKER CONTROL - No directional commitment")
+alertcondition(state_changed and interpretation_state == "NO-TRADE" and barstate.isconfirmed, "No-Trade Zone", "OFA4: NO-TRADE ZONE - Avoid trading")
+alertcondition(is_notrade and math.abs(ofa_score) > thresh_extreme and barstate.isconfirmed, "Extreme Flow Trap Risk", "OFA4: Extreme flow with no price response - HIGH TRAP RISK")
+
+// ============================================================================
+// MODULE 14: INFO TABLE
+// ============================================================================
+
+var table tbl = table.new(position.top_right, 2, 12, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    // Header
+    color state_col = interpretation_state == "NO-TRADE" ? label_notrade : interpretation_state == "ABSORPTION" ? label_absorption : interpretation_state == "DISTRIBUTION" ? label_distribution : interpretation_state == "MM CONTROL" ? label_chop : color.white
+
+    table.cell(tbl, 0, 0, "INTERPRETATION", text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 0, interpretation_state, text_color=state_col, text_size=size.small)
+
+    table.cell(tbl, 0, 1, "Detail", text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 1, interpretation_detail, text_color=state_col, text_size=size.tiny)
+
+    table.cell(tbl, 0, 2, "─────", text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 2, "─────", text_color=color.gray, text_size=size.tiny)
+
+    table.cell(tbl, 0, 3, "OFA Score", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 3, str.tostring(ofa_score, "#.##"), text_color=bar_col, text_size=size.small)
+
+    table.cell(tbl, 0, 4, "Flow Efficiency", text_color=color.white, text_size=size.small)
+    color eff_col = flow_efficiency > 0.5 ? color.green : flow_efficiency > 0.2 ? color.yellow : color.red
+    table.cell(tbl, 1, 4, str.tostring(flow_efficiency, "#.##"), text_color=eff_col, text_size=size.small)
+
+    table.cell(tbl, 0, 5, "Activity σ", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 5, str.tostring(activity_anom, "#.##"), text_color=color.gray, text_size=size.small)
+
+    table.cell(tbl, 0, 6, "Direction σ", text_color=color.white, text_size=size.small)
+    color dir_col = direction_anom > 0 ? color.green : color.red
+    table.cell(tbl, 1, 6, str.tostring(direction_anom, "#.##"), text_color=dir_col, text_size=size.small)
+
+    table.cell(tbl, 0, 7, "Persistence", text_color=color.white, text_size=size.small)
+    color pers_col = flow_persistence > 0.5 ? color.green : flow_persistence > 0.3 ? color.yellow : color.red
+    table.cell(tbl, 1, 7, str.tostring(flow_persistence * 100, "#") + "%", text_color=pers_col, text_size=size.small)
+
+    table.cell(tbl, 0, 8, "Zero Crosses", text_color=color.white, text_size=size.small)
+    color cross_col = cross_count >= chop_crosses ? color.orange : color.gray
+    table.cell(tbl, 1, 8, str.tostring(cross_count) + "/" + str.tostring(chop_lookback), text_color=cross_col, text_size=size.small)
+
+    table.cell(tbl, 0, 9, "─────", text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 9, "─────", text_color=color.gray, text_size=size.tiny)
+
+    table.cell(tbl, 0, 10, "Thresh Alert", text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 10, "±" + str.tostring(thresh_alert, "#.##"), text_color=color.gray, text_size=size.tiny)
+
+    table.cell(tbl, 0, 11, "Thresh Extreme", text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, 11, "±" + str.tostring(thresh_extreme, "#.##"), text_color=color.gray, text_size=size.tiny)
+
+// ============================================================================
+// END v4 - INTERPRETATION LAYER
+// ============================================================================
