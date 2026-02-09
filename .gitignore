@@ -62,6 +62,10 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+
+# Output
+output/
 
 # Temporary
 *.tmp
