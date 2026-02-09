@@ -168,9 +168,9 @@ def cmd_version(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success)
     """
-    print("OBSIDIAN MM v0.1.0")
+    print("OBSIDIAN MM v0.2.0")
     print("Market-Maker Regime Engine")
-    print("https://github.com/aetherveil/obsidian-mm")
+    print("https://github.com/Maeshowe/aetherveil")
     return 0
 
 
