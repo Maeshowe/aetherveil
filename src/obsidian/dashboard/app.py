@@ -153,6 +153,7 @@ with st.sidebar:
     page = st.radio(
         "Select Page",
         [
+            "Overview",
             "Daily State",
             "Historical Regimes",
             "Drivers & Contributors",
@@ -177,7 +178,11 @@ st.session_state['start_date'] = start_date
 st.session_state['end_date'] = end_date
 
 # Route to selected page
-if page == "Daily State":
+if page == "Overview":
+    from obsidian.dashboard.pages import overview
+    overview.render(end_date)
+
+elif page == "Daily State":
     from obsidian.dashboard.pages import daily_state
     daily_state.render(ticker, end_date)
 

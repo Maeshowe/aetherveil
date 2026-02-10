@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import pandas as pd
 
 from obsidian.dashboard.data import (
+    get_available_tickers,
     get_historical_diagnostics,
     get_focus_diagnostics,
     regime_badge_html,
@@ -308,6 +309,73 @@ Regimes are classified daily using **deterministic rules** (not ML). They are mu
             xaxis_title="To Regime", yaxis_title="From Regime", height=400,
         )
         st.plotly_chart(fig_heatmap, width="stretch")
+
+    # --- Regime Heatmap (all tickers) ---
+    all_tickers = get_available_tickers()
+    heatmap_data: list[tuple[str, date, int, str]] = []  # (ticker, date, regime_num, label)
+
+    for t in all_tickers:
+        t_hist = get_historical_diagnostics(t, start_date, end_date)
+        for d, diag in t_hist.items():
+            num = regime_to_num.get(diag.regime)
+            if num is not None:
+                heatmap_data.append((t, d, num, _REGIME_LABELS.get(diag.regime, "?")))
+
+    if len(heatmap_data) >= 4:
+        st.markdown("---")
+        st.markdown("### Regime Heatmap (all tickers)")
+        st.caption("Each cell shows one ticker's regime on one day.")
+
+        hm_df = pd.DataFrame(heatmap_data, columns=["ticker", "date", "regime_num", "regime_label"])
+        hm_pivot = hm_df.pivot_table(
+            index="ticker", columns="date", values="regime_num", aggfunc="first",
+        )
+        # Label pivot for hover
+        hm_labels = hm_df.pivot_table(
+            index="ticker", columns="date", values="regime_label", aggfunc="first",
+        )
+
+        # Build discrete colorscale (0-6 → 7 regime colors)
+        n_regimes = len(_REGIME_ORDER)
+        colorscale = []
+        for i, regime in enumerate(_REGIME_ORDER):
+            lo = i / n_regimes
+            hi = (i + 1) / n_regimes
+            color = _REGIME_COLORS[regime]
+            colorscale.append([lo, color])
+            colorscale.append([hi, color])
+
+        fig_heatmap = go.Figure(data=go.Heatmap(
+            z=hm_pivot.values,
+            x=[d.strftime("%Y-%m-%d") for d in hm_pivot.columns],
+            y=hm_pivot.index.tolist(),
+            colorscale=colorscale,
+            zmin=0,
+            zmax=n_regimes,
+            text=hm_labels.reindex(index=hm_pivot.index, columns=hm_pivot.columns).values,
+            hovertemplate="%{y}<br>%{x}<br>%{text}<extra></extra>",
+            showscale=False,
+        ))
+
+        fig_heatmap.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Ticker",
+            height=max(300, len(hm_pivot) * 30),
+        )
+        st.plotly_chart(fig_heatmap, width="stretch")
+
+        # Legend
+        legend_items = " &nbsp; ".join(
+            f'<span style="background-color:{_REGIME_COLORS[r]}; color:white; '
+            f'padding:2px 8px; border-radius:10px; font-size:0.8rem;">'
+            f'{_REGIME_LABELS[r]}</span>'
+            for r in _REGIME_ORDER
+        )
+        st.markdown(legend_items, unsafe_allow_html=True)
+    elif heatmap_data:
+        st.markdown("---")
+        st.markdown("### Regime Heatmap (all tickers)")
+        st.caption("Need more ticker/date combinations for heatmap. Run diagnostics for more dates.")
 
     # --- FOCUS Regime Snapshot (CORE tickers only) ---
     if ticker in CORE_TICKERS:
