@@ -65,11 +65,63 @@ class Settings(BaseSettings):
     )
     fred_rate_limit: int = Field(default=5, ge=1, description="FRED requests/second")
 
+    # AI Narrator (optional — graceful degradation if absent)
+    ai_provider: str | None = Field(
+        default=None,
+        description="AI narrator provider: 'openai', 'anthropic', or 'ollama' (None = disabled)",
+    )
+    openai_api_key: str | None = Field(
+        default=None,
+        description="OpenAI API key for AI narrator",
+    )
+    anthropic_api_key: str | None = Field(
+        default=None,
+        description="Anthropic API key for AI narrator",
+    )
+    ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        description="Ollama base URL for local AI narrator",
+    )
+    ai_model: str | None = Field(
+        default=None,
+        description="AI model override (default per provider)",
+    )
+    ai_language: str = Field(
+        default="en",
+        description="AI narrator language: 'en' or 'hu'",
+    )
+    ai_max_tokens: int = Field(
+        default=256,
+        ge=64,
+        le=1024,
+        description="Maximum tokens for AI narrator response",
+    )
+
     # Rate Limiting (conservative defaults)
     uw_rate_limit: int = Field(default=10, ge=1, description="UW requests/second per client")
     uw_concurrency: int = Field(default=3, ge=1, le=50, description="Max concurrent UW ticker fetches")
     polygon_rate_limit: int = Field(default=5, ge=1, description="Polygon requests/second")
     fmp_rate_limit: int = Field(default=10, ge=1, description="FMP requests/second")
+
+    @field_validator("ai_provider")
+    @classmethod
+    def validate_ai_provider(cls, v: str | None) -> str | None:
+        """Ensure AI provider is valid."""
+        if v is None:
+            return None
+        v_lower = v.lower()
+        if v_lower not in {"openai", "anthropic", "ollama"}:
+            raise ValueError(f"ai_provider must be 'openai', 'anthropic', or 'ollama', got '{v}'")
+        return v_lower
+
+    @field_validator("ai_language")
+    @classmethod
+    def validate_ai_language(cls, v: str) -> str:
+        """Ensure AI language is valid."""
+        v_lower = v.lower()
+        if v_lower not in {"en", "hu"}:
+            raise ValueError(f"ai_language must be 'en' or 'hu', got '{v}'")
+        return v_lower
 
     @field_validator("log_level")
     @classmethod

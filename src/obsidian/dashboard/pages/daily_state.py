@@ -236,6 +236,12 @@ This is a **diagnostic**, not a prediction. It tells you *what is happening*, no
     st.markdown("### Diagnostic Explanation")
     _render_explanation(diag.explanation)
 
+    # --- AI Analysis (optional enrichment) ---
+    if diag.ai_explanation:
+        st.markdown("---")
+        st.markdown("### AI Analysis")
+        st.markdown(diag.ai_explanation)
+
     # --- Focus Decomposition (CORE tickers only) ---
     if ticker in CORE_TICKERS:
         st.markdown("---")

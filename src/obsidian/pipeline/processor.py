@@ -30,6 +30,7 @@ from obsidian.engine import (
     RegimeType,
     ExcludedFeature,
 )
+from obsidian.ai import Narrator
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class DiagnosticResult:
     raw_features: dict[str, float]
     baseline_state: str
     explanation: str
+    ai_explanation: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -63,7 +65,8 @@ class DiagnosticResult:
             "z_scores": self.z_scores,
             "raw_features": self.raw_features,
             "baseline_state": self.baseline_state,
-            "explanation": self.explanation
+            "explanation": self.explanation,
+            "ai_explanation": self.ai_explanation,
         }
 
 
@@ -106,6 +109,33 @@ class Processor:
         self.scorer = Scorer(window=window)
         self.classifier = Classifier()
         self.explainer = Explainer()
+
+        # AI Narrator (optional — graceful degradation)
+        self.narrator: Narrator | None = None
+        try:
+            from obsidian.config import settings
+            if settings.ai_provider:
+                api_key = None
+                if settings.ai_provider == "openai":
+                    api_key = settings.openai_api_key
+                elif settings.ai_provider == "anthropic":
+                    api_key = settings.anthropic_api_key
+                # ollama needs no key
+
+                if settings.ai_provider == "ollama" or api_key:
+                    self.narrator = Narrator(
+                        provider=settings.ai_provider,
+                        api_key=api_key,
+                        model=settings.ai_model,
+                        language=settings.ai_language,
+                        base_url=settings.ollama_base_url,
+                        max_tokens=settings.ai_max_tokens,
+                    )
+                    logger.info("AI Narrator enabled: %s (%s)", settings.ai_provider, self.narrator.model)
+                else:
+                    logger.info("AI Narrator: %s configured but no API key found", settings.ai_provider)
+        except Exception as e:
+            logger.debug("AI Narrator not initialized: %s", e)
 
     @staticmethod
     def _safe_last(series: pd.Series | None) -> float:
@@ -453,7 +483,7 @@ class Processor:
             date=target_date.isoformat()
         )
 
-        return DiagnosticResult(
+        result = DiagnosticResult(
             ticker=ticker,
             date=target_date,
             regime=regime_result.regime,
@@ -466,6 +496,12 @@ class Processor:
             baseline_state=baseline_state.value,
             explanation=explanation_output.format_full()
         )
+
+        # AI Narrator enrichment (optional — never blocks pipeline)
+        if self.narrator:
+            result.ai_explanation = await self.narrator.narrate(result.to_dict())
+
+        return result
 
     async def process_all(
         self,
