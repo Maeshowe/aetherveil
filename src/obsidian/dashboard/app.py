@@ -26,16 +26,29 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: 700;
-        color: #1f77b4;
-        margin-bottom: 0.5rem;
+    .brand-bar {
+        display: flex;
+        align-items: baseline;
+        gap: 0.6rem;
+        margin-bottom: 0.15rem;
     }
-    .sub-header {
-        font-size: 1.2rem;
-        color: #666;
-        margin-bottom: 2rem;
+    .brand-name {
+        font-size: 1.6rem;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        color: #0d1117;
+    }
+    .brand-tag {
+        font-size: 0.85rem;
+        font-weight: 500;
+        color: #8b949e;
+        letter-spacing: 0.06em;
+    }
+    .brand-rule {
+        height: 2px;
+        background: linear-gradient(90deg, #1f6feb 0%, transparent 60%);
+        border: none;
+        margin: 0 0 1.4rem 0;
     }
     .metric-card {
         background-color: #f0f2f6;
@@ -62,10 +75,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Header
-st.markdown('<div class="main-header">OBSIDIAN MM</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-header">Market-Maker Regime Engine</div>',
-    unsafe_allow_html=True
+    '<div class="brand-bar">'
+    '<span class="brand-name">OBSIDIAN</span>'
+    '<span class="brand-tag">Market-Maker Regime Engine</span>'
+    '</div>'
+    '<hr class="brand-rule">',
+    unsafe_allow_html=True,
 )
 
 # Sidebar
@@ -179,23 +195,23 @@ st.session_state['end_date'] = end_date
 
 # Route to selected page
 if page == "Overview":
-    from obsidian.dashboard.pages import overview
+    from obsidian.dashboard.views import overview
     overview.render(end_date)
 
 elif page == "Daily State":
-    from obsidian.dashboard.pages import daily_state
+    from obsidian.dashboard.views import daily_state
     daily_state.render(ticker, end_date)
 
 elif page == "Historical Regimes":
-    from obsidian.dashboard.pages import historical_regimes
+    from obsidian.dashboard.views import historical_regimes
     historical_regimes.render(ticker, start_date, end_date)
 
 elif page == "Drivers & Contributors":
-    from obsidian.dashboard.pages import drivers
+    from obsidian.dashboard.views import drivers
     drivers.render(ticker, end_date)
 
 elif page == "Baseline Status":
-    from obsidian.dashboard.pages import baseline_status
+    from obsidian.dashboard.views import baseline_status
     baseline_status.render(ticker, end_date)
 
 # Footer
