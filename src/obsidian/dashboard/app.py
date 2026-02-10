@@ -45,10 +45,11 @@ st.markdown("""
     }
     .regime-badge {
         display: inline-block;
-        padding: 0.5rem 1rem;
-        border-radius: 0.3rem;
-        font-weight: 600;
-        font-size: 1.1rem;
+        padding: 0.5rem 1.5rem;
+        border-radius: 1rem;
+        font-weight: 700;
+        font-size: 1.2rem;
+        letter-spacing: 0.05em;
     }
     .regime-gamma-pos { background-color: #4CAF50; color: white; }
     .regime-gamma-neg { background-color: #f44336; color: white; }

@@ -26,6 +26,19 @@ def render(ticker: str, end_date: date) -> None:
     st.markdown("## Drivers & Contributors")
     st.markdown(f"**{ticker}** -- {end_date.strftime('%Y-%m-%d')}")
 
+    with st.expander("How to read this page"):
+        st.markdown("""
+**Drivers** shows which features are driving today's unusualness score.
+
+- **Feature Contributions** — horizontal bar chart. Longer bar = bigger impact on the score. Color encodes Z-score direction (red = positive deviation, blue = negative).
+- **Z-Score** — how many standard deviations this feature is from its 63-day rolling mean. Z > 2 or Z < -2 is unusual.
+- **Weight (w)** — fixed conceptual importance of each feature (not optimized or fitted):
+  - Dark Pool Share: 0.25 | Gamma Exposure: 0.25 | Venue Mix: 0.20 | Block Intensity: 0.15 | IV Rank: 0.15
+- **Contribution (C)** — `w × |Z|` — the actual impact on the unusualness score.
+- **NaN features** — excluded from scoring (not imputed). This is by design: false negatives are acceptable, false confidence is not.
+- **FOCUS Cross-Reference** — (CORE tickers only) compares Z-scores across structural FOCUS tickers to identify which components drive the ETF's behavior.
+        """)
+
     diag = get_cached_diagnostic(ticker, end_date)
 
     if diag is None:
@@ -103,29 +116,6 @@ def render(ticker: str, end_date: date) -> None:
     with col3:
         total_possible = len(weights)
         st.metric("Features Used", f"{len(valid_features)}/{total_possible}")
-
-    st.markdown("---")
-
-    # --- Waterfall Chart ---
-    st.markdown("### Score Composition (Waterfall)")
-
-    if valid_features:
-        fig_waterfall = go.Figure(go.Waterfall(
-            name="Contribution",
-            orientation="v",
-            measure=["relative"] * len(valid_features) + ["total"],
-            x=[f["label"] for f in valid_features] + ["Total"],
-            y=[f["contribution"] for f in valid_features] + [total_score],
-            text=[f"+{f['contribution']:.3f}" for f in valid_features] + [f"{total_score:.3f}"],
-            textposition="outside",
-            connector={"line": {"color": "rgb(63, 63, 63)"}},
-        ))
-        fig_waterfall.update_layout(
-            title="Cumulative Contribution Breakdown",
-            showlegend=False,
-            height=400,
-        )
-        st.plotly_chart(fig_waterfall, width="stretch")
 
     st.markdown("---")
 

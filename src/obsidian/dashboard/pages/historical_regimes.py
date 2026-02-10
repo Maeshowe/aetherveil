@@ -5,7 +5,11 @@ from datetime import date
 import plotly.graph_objects as go
 import pandas as pd
 
-from obsidian.dashboard.data import get_historical_diagnostics, get_focus_diagnostics
+from obsidian.dashboard.data import (
+    get_historical_diagnostics,
+    get_focus_diagnostics,
+    regime_badge_html,
+)
 from obsidian.engine.classifier import RegimeType
 from obsidian.universe.manager import CORE_TICKERS
 
@@ -44,6 +48,19 @@ def render(ticker: str, start_date: date, end_date: date) -> None:
     """
     st.markdown("## Historical Regimes")
     st.markdown(f"**{ticker}** -- {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+
+    with st.expander("How to read this page"):
+        st.markdown("""
+**Historical Regimes** shows how the microstructure regime has evolved over time.
+
+- **Timeline** — each dot is one day, colored by regime. Clusters of the same color = persistent regime.
+- **Distribution** — how often each regime appeared in the selected window.
+- **Transitions** — when the regime flipped (e.g., NEU to Γ⁻). Frequent flips = unstable microstructure.
+- **Transition Matrix** — probability of moving from one regime to another. Useful for recognizing sticky vs transient patterns.
+- **FOCUS Snapshot** — (CORE tickers only) shows the current regime of structural FOCUS tickers for context.
+
+Regimes are classified daily using **deterministic rules** (not ML). They are mutually exclusive — exactly one regime per day.
+        """)
 
     history = get_historical_diagnostics(ticker, start_date, end_date)
 
@@ -227,9 +244,7 @@ def render(ticker: str, start_date: date, end_date: date) -> None:
             for fd in focus_diags:
                 col_t, col_r, col_regime, col_score = st.columns([2, 2, 3, 2])
 
-                regime = fd["regime"]
-                color = _REGIME_COLORS.get(regime, "#666") if regime else "#666"
-                regime_text = fd["regime_label"] or "—"
+                badge = regime_badge_html(fd["regime_label"])
                 score_text = f"{fd['score_percentile']:.1f}" if fd["score_percentile"] is not None else "—"
 
                 with col_t:
@@ -240,10 +255,7 @@ def render(ticker: str, start_date: date, end_date: date) -> None:
                 with col_r:
                     st.text(fd["reason"])
                 with col_regime:
-                    st.markdown(
-                        f"<span style='color:{color}; font-weight:600'>{regime_text}</span>",
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown(badge, unsafe_allow_html=True)
                 with col_score:
                     st.text(score_text)
 

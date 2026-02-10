@@ -10,8 +10,10 @@ from obsidian.dashboard.data import (
     get_cached_diagnostic,
     get_feature_weights,
     get_focus_entries,
+    get_focus_diagnostics,
     get_focus_summary,
     feature_label,
+    regime_badge_html,
 )
 from obsidian.engine.classifier import RegimeType
 from obsidian.universe.manager import CORE_TICKERS
@@ -29,6 +31,77 @@ _REGIME_CSS = {
 }
 
 
+def _render_explanation(explanation: str) -> None:
+    """Render formatted diagnostic explanation with sections and highlights."""
+    if not explanation:
+        st.caption("_No explanation available._")
+        return
+
+    lines = explanation.strip().split("\n")
+
+    # Parse into sections (split on blank lines, skip header)
+    sections: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if line.startswith("==="):
+            continue
+        if line.strip() == "":
+            if current:
+                sections.append(current)
+                current = []
+        else:
+            current.append(line)
+    if current:
+        sections.append(current)
+
+    for section in sections:
+        first = section[0]
+
+        if first.startswith("Regime:"):
+            # Regime section — bold header + triggering conditions as bullets
+            st.markdown(f"**{first}**")
+            for line in section[1:]:
+                st.markdown(f"- `{line.strip()}`")
+
+        elif first.startswith("Unusualness:"):
+            # Score section — header + drivers as bullet list
+            st.markdown(f"**{first}**")
+            for line in section[1:]:
+                if line.startswith("Top drivers:"):
+                    drivers = line.replace("Top drivers: ", "").split("; ")
+                    for d in drivers:
+                        parts = d.split(" contrib=")
+                        if len(parts) == 2:
+                            name, val = parts
+                            st.markdown(
+                                f"- **{name}** — contribution: `{val}`"
+                            )
+                        else:
+                            st.markdown(f"- {d}")
+                else:
+                    st.markdown(f"  {line}")
+
+        elif first.startswith("Excluded:"):
+            excluded_text = first.replace("Excluded: ", "")
+            if excluded_text == "none":
+                st.success("**Excluded features:** none — full feature set active")
+            else:
+                items = excluded_text.split(", ")
+                st.warning(
+                    "**Excluded features:** "
+                    + " | ".join(f"`{item}`" for item in items)
+                )
+
+        elif first.startswith("Baseline:"):
+            state = first.replace("Baseline: ", "")
+            if state == "COMPLETE":
+                st.success(f"**Baseline:** {state} — all features have sufficient history")
+            elif state == "PARTIAL":
+                st.info(f"**Baseline:** {state} — some features lack sufficient history")
+            else:
+                st.warning(f"**Baseline:** {state} — insufficient data for baseline computation")
+
+
 def render(ticker: str, end_date: date) -> None:
     """Render the Daily State page.
 
@@ -38,6 +111,25 @@ def render(ticker: str, end_date: date) -> None:
     """
     st.markdown("## Daily State")
     st.markdown(f"**{ticker}** -- {end_date.strftime('%Y-%m-%d')}")
+
+    with st.expander("How to read this page"):
+        st.markdown("""
+**Daily State** shows today's microstructure diagnosis for a single ticker.
+
+- **Regime** — what behavioral pattern the market-makers exhibit today
+  - **Γ⁺** (green): Dealers long gamma — volatility suppression, tight range
+  - **Γ⁻** (red): Dealers short gamma — liquidity vacuum, amplified moves
+  - **DD** (purple): Dark-dominant — institutional positioning via dark pools
+  - **ABS** (blue): Absorption — passive buying absorbs sell pressure
+  - **DIST** (orange): Distribution — supply distributed into strength
+  - **NEU** (gray): No dominant pattern
+  - **UND**: Insufficient data to classify
+- **Unusualness Score (U)** — how unusual today's microstructure is compared to the last 63 trading days (0 = normal, 100 = extreme)
+- **Z-Scores** — how many standard deviations each feature is from its recent baseline
+- **FOCUS** — structural tickers that explain *why* this ETF behaves this way (e.g., NVDA stress may explain QQQ regime)
+
+This is a **diagnostic**, not a prediction. It tells you *what is happening*, not *what will happen*.
+        """)
 
     diag = get_cached_diagnostic(ticker, end_date)
 
@@ -140,9 +232,9 @@ def render(ticker: str, end_date: date) -> None:
 
     st.markdown("---")
 
-    # --- Explainability Text ---
+    # --- Explainability Text (structured) ---
     st.markdown("### Diagnostic Explanation")
-    st.markdown(diag.explanation or "_No explanation available._")
+    _render_explanation(diag.explanation)
 
     # --- Focus Decomposition (CORE tickers only) ---
     if ticker in CORE_TICKERS:
@@ -160,6 +252,13 @@ def render(ticker: str, end_date: date) -> None:
                 f"{summary['event_count']} event)"
             )
 
+            # Build regime lookup from focus diagnostics
+            focus_diags = get_focus_diagnostics(end_date)
+            regime_lookup = {
+                fd["ticker"]: fd["regime_label"]
+                for fd in focus_diags
+            }
+
             # Partition entries: this ETF's structural first, then other structural, then rest
             etf_structural = []
             other_structural = []
@@ -175,53 +274,60 @@ def render(ticker: str, end_date: date) -> None:
                     non_structural.append(entry)
 
             # Render header
-            col_ticker, col_reason, col_details, col_inactive = st.columns([2, 2, 4, 2])
-            with col_ticker:
-                st.markdown("**Ticker**")
-            with col_reason:
-                st.markdown("**Reason**")
-            with col_details:
-                st.markdown("**Details**")
-            with col_inactive:
-                st.markdown("**Inactive**")
+            hdr = st.columns([2, 2, 2, 3, 1])
+            for col, label in zip(hdr, ["**Ticker**", "**Regime**", "**Reason**", "**Details**", "**Idle**"]):
+                with col:
+                    st.markdown(label)
+
+            def _render_focus_row(entry: dict, style: str = "normal") -> None:
+                """Render a single focus row with regime badge."""
+                cols = st.columns([2, 2, 2, 3, 1])
+                badge = regime_badge_html(regime_lookup.get(entry["ticker"]))
+
+                if style == "bold":
+                    with cols[0]:
+                        st.markdown(f"**{entry['ticker']}**")
+                    with cols[1]:
+                        st.markdown(badge, unsafe_allow_html=True)
+                    with cols[2]:
+                        st.markdown(f"**{entry['reason']}**")
+                    with cols[3]:
+                        st.markdown(f"**{entry['details']}**")
+                    with cols[4]:
+                        st.markdown(f"**{entry['days_inactive']}d**")
+                elif style == "dimmed":
+                    dim = "color:#999"
+                    with cols[0]:
+                        st.markdown(f"<span style='{dim}'>{entry['ticker']}</span>", unsafe_allow_html=True)
+                    with cols[1]:
+                        st.markdown(badge, unsafe_allow_html=True)
+                    with cols[2]:
+                        st.markdown(f"<span style='{dim}'>{entry['reason']}</span>", unsafe_allow_html=True)
+                    with cols[3]:
+                        st.markdown(f"<span style='{dim}'>{entry['details']}</span>", unsafe_allow_html=True)
+                    with cols[4]:
+                        st.markdown(f"<span style='{dim}'>{entry['days_inactive']}d</span>", unsafe_allow_html=True)
+                else:
+                    with cols[0]:
+                        st.text(entry["ticker"])
+                    with cols[1]:
+                        st.markdown(badge, unsafe_allow_html=True)
+                    with cols[2]:
+                        st.text(entry["reason"])
+                    with cols[3]:
+                        st.text(entry["details"])
+                    with cols[4]:
+                        st.text(f"{entry['days_inactive']}d")
 
             # This ETF's structural tickers — bold
-            if etf_structural:
-                for entry in etf_structural:
-                    col_ticker, col_reason, col_details, col_inactive = st.columns([2, 2, 4, 2])
-                    with col_ticker:
-                        st.markdown(f"**{entry['ticker']}**")
-                    with col_reason:
-                        st.markdown(f"**{entry['reason']}**")
-                    with col_details:
-                        st.markdown(f"**{entry['details']}**")
-                    with col_inactive:
-                        st.markdown(f"**{entry['days_inactive']}d**")
-
+            for entry in etf_structural:
+                _render_focus_row(entry, style="bold")
             # Other structural tickers — dimmed
-            if other_structural:
-                for entry in other_structural:
-                    col_ticker, col_reason, col_details, col_inactive = st.columns([2, 2, 4, 2])
-                    with col_ticker:
-                        st.markdown(f"<span style='color:#999'>{entry['ticker']}</span>", unsafe_allow_html=True)
-                    with col_reason:
-                        st.markdown(f"<span style='color:#999'>{entry['reason']}</span>", unsafe_allow_html=True)
-                    with col_details:
-                        st.markdown(f"<span style='color:#999'>{entry['details']}</span>", unsafe_allow_html=True)
-                    with col_inactive:
-                        st.markdown(f"<span style='color:#999'>{entry['days_inactive']}d</span>", unsafe_allow_html=True)
-
+            for entry in other_structural:
+                _render_focus_row(entry, style="dimmed")
             # Stress + event tickers — normal
             for entry in non_structural:
-                col_ticker, col_reason, col_details, col_inactive = st.columns([2, 2, 4, 2])
-                with col_ticker:
-                    st.text(entry["ticker"])
-                with col_reason:
-                    st.text(entry["reason"])
-                with col_details:
-                    st.text(entry["details"])
-                with col_inactive:
-                    st.text(f"{entry['days_inactive']}d")
+                _render_focus_row(entry, style="normal")
 
             st.caption(
                 "Focus tickers are **lenses**, not targets. "

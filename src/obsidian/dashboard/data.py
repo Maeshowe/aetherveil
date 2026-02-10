@@ -177,6 +177,39 @@ def feature_label(name: str) -> str:
     return FEATURE_LABELS.get(name, name)
 
 
+# Regime colour mapping for consistent badge rendering
+REGIME_COLORS = {
+    "Γ⁺": "#4CAF50",
+    "Γ⁻": "#f44336",
+    "DD": "#9C27B0",
+    "ABS": "#2196F3",
+    "DIST": "#FF9800",
+    "NEU": "#9E9E9E",
+    "UND": "#607D8B",
+}
+
+
+def regime_badge_html(label: str | None) -> str:
+    """Return an inline HTML pill badge for a regime label.
+
+    Args:
+        label: Regime label (e.g. "Γ⁺", "DD") or None.
+
+    Returns:
+        HTML string for a coloured pill badge.
+    """
+    if not label:
+        return '<span style="color:#999">—</span>'
+    # Extract the short code (first token before " — ")
+    short = label.split(" — ")[0].split(" ")[0].strip()
+    color = REGIME_COLORS.get(short, "#666")
+    return (
+        f'<span style="background-color:{color}; color:white; '
+        f'padding:2px 8px; border-radius:10px; font-weight:600; '
+        f'font-size:0.85rem;">{short}</span>'
+    )
+
+
 def get_focus_diagnostics(target_date: date, etf: str | None = None) -> list[dict]:
     """Return FOCUS tickers with their cached diagnostics for cross-reference.
 

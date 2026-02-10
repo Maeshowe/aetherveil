@@ -41,13 +41,19 @@ def render(ticker: str, end_date: date) -> None:
     st.markdown("## Baseline Status")
     st.markdown(f"**{ticker}** -- {end_date.strftime('%Y-%m-%d')}")
 
-    st.markdown(f"""
-    Data quality and sufficiency for the rolling {_WINDOW}-day baseline window.
+    with st.expander("How to read this page"):
+        st.markdown(f"""
+**Baseline Status** shows data quality and sufficiency for each feature.
 
-    **Baseline States**:
-    - COMPLETE: valid z-score computed (>={_MIN_OBS} observations)
-    - EMPTY: insufficient data or feature unavailable (z-score = NaN)
-    """)
+OBSIDIAN MM compares today's values against a **rolling {_WINDOW}-day baseline** (roughly 1 quarter of trading days). To compute a valid Z-score, a feature needs at least **{_MIN_OBS} non-NaN observations** in the window.
+
+- **COMPLETE** — sufficient history, Z-score computed normally
+- **EMPTY** — not enough data points yet. The feature is **excluded from scoring** (not approximated)
+
+This is intentional: **"False negatives are acceptable. False confidence is not."** The system never imputes, interpolates, or forward-fills missing data. When a feature has insufficient data, it is excluded and the reason is documented.
+
+During the first {_WINDOW} trading days, the system uses an **expanding window** (cold start). The first valid Z-score appears at day {_MIN_OBS}.
+        """)
 
     diag = get_cached_diagnostic(ticker, end_date)
 

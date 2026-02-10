@@ -125,7 +125,7 @@ class TestVersionCommand:
         assert exit_code == 0
         captured = capsys.readouterr()
         assert "OBSIDIAN MM" in captured.out
-        assert "v0.1.0" in captured.out
+        assert "v0.2.0" in captured.out
 
 
 class TestMainEntryPoint:
