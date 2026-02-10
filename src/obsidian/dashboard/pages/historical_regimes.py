@@ -121,6 +121,52 @@ Regimes are classified daily using **deterministic rules** (not ML). They are mu
 
     st.markdown("---")
 
+    # --- Unusualness Score Timeline ---
+    st.markdown("### Unusualness Score Timeline")
+
+    score_df = df[df["score_pct"].notna()].copy()
+    if not score_df.empty:
+        fig_score = go.Figure()
+
+        # Plot each regime as separate trace for colored markers
+        for regime in _REGIME_ORDER:
+            rdf = score_df[score_df["regime"] == regime]
+            if rdf.empty:
+                continue
+            fig_score.add_trace(go.Scatter(
+                x=rdf["date"],
+                y=rdf["score_pct"],
+                mode="lines+markers",
+                marker=dict(size=7, color=_REGIME_COLORS[regime]),
+                line=dict(color=_REGIME_COLORS[regime], width=1),
+                name=_REGIME_LABELS[regime],
+                hovertemplate="%{x}<br>U = %{y:.1f}<extra>" + _REGIME_LABELS[regime] + "</extra>",
+            ))
+
+        # Threshold lines
+        for thresh, color, label in [
+            (30, "#9E9E9E", "Normal"),
+            (60, "#FF9800", "Elevated"),
+            (80, "#f44336", "Extreme"),
+        ]:
+            fig_score.add_hline(
+                y=thresh, line_dash="dash", line_color=color, opacity=0.5,
+                annotation_text=label, annotation_position="top left",
+            )
+
+        fig_score.update_layout(
+            yaxis=dict(title="U percentile", range=[0, 105]),
+            xaxis=dict(title="Date"),
+            height=350,
+            showlegend=False,
+            hovermode="closest",
+        )
+        st.plotly_chart(fig_score, width="stretch")
+    else:
+        st.caption("No score data available for timeline.")
+
+    st.markdown("---")
+
     # --- Regime Distribution ---
     st.markdown("### Regime Distribution")
 
@@ -146,6 +192,50 @@ Regimes are classified daily using **deterministic rules** (not ML). They are mu
         pct = (count / total_days * 100) if total_days > 0 else 0
         with cols[i]:
             st.metric(label, f"{pct:.0f}%", f"{count} days")
+
+    st.markdown("---")
+
+    # --- Regime Dwell Time ---
+    st.markdown("### Regime Dwell Time")
+
+    # Compute consecutive runs of same regime
+    runs: list[tuple[RegimeType, int]] = []
+    current_regime = None
+    current_length = 0
+    for d in sorted(history.keys()):
+        r = history[d].regime
+        if r == current_regime:
+            current_length += 1
+        else:
+            if current_regime is not None:
+                runs.append((current_regime, current_length))
+            current_regime = r
+            current_length = 1
+    if current_regime is not None:
+        runs.append((current_regime, current_length))
+
+    # Aggregate per regime
+    from collections import defaultdict
+    regime_runs: dict[RegimeType, list[int]] = defaultdict(list)
+    for regime, length in runs:
+        regime_runs[regime].append(length)
+
+    # Display only regimes that appeared
+    present_regimes = [r for r in _REGIME_ORDER if r in regime_runs]
+    if present_regimes:
+        dwell_cols = st.columns(len(present_regimes))
+        for i, regime in enumerate(present_regimes):
+            lengths = regime_runs[regime]
+            avg_len = sum(lengths) / len(lengths)
+            max_len = max(lengths)
+            with dwell_cols[i]:
+                st.metric(
+                    _REGIME_LABELS[regime],
+                    f"{avg_len:.1f}d avg",
+                    f"max: {max_len}d",
+                )
+    else:
+        st.caption("No dwell time data available.")
 
     st.markdown("---")
 

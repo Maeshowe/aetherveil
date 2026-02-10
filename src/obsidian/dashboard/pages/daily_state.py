@@ -3,7 +3,7 @@
 import math
 
 import streamlit as st
-from datetime import date
+from datetime import date, timedelta
 import plotly.graph_objects as go
 
 from obsidian.dashboard.data import (
@@ -145,6 +145,73 @@ This is a **diagnostic**, not a prediction. It tells you *what is happening*, no
         f'<div class="{badge_class} regime-badge">{diag.regime_label}</div>',
         unsafe_allow_html=True,
     )
+
+    # --- What Changed? (day-over-day comparison) ---
+    prev = None
+    for offset in range(1, 8):
+        prev = get_cached_diagnostic(ticker, end_date - timedelta(days=offset))
+        if prev:
+            break
+
+    if prev:
+        st.markdown("---")
+        st.markdown("### What Changed?")
+        st.caption(f"Compared to {prev.date.strftime('%Y-%m-%d')}")
+
+        wc1, wc2, wc3 = st.columns(3)
+
+        # Regime change
+        with wc1:
+            if prev.regime != diag.regime:
+                prev_badge = _REGIME_CSS.get(prev.regime, "regime-neutral")
+                st.markdown(
+                    f'<span class="{prev_badge} regime-badge" style="font-size:0.9rem; padding:0.3rem 0.8rem;">'
+                    f'{prev.regime.value}</span>'
+                    f' &rarr; '
+                    f'<span class="{badge_class} regime-badge" style="font-size:0.9rem; padding:0.3rem 0.8rem;">'
+                    f'{diag.regime.value}</span>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(f"Regime: **{diag.regime.value}** (unchanged)")
+
+        # Score delta
+        with wc2:
+            if diag.score_percentile is not None and prev.score_percentile is not None:
+                delta = diag.score_percentile - prev.score_percentile
+                st.metric("U percentile", f"{diag.score_percentile:.1f}", f"{delta:+.1f}")
+            else:
+                st.metric("U percentile", "N/A")
+
+        # Baseline change
+        with wc3:
+            if prev.baseline_state != diag.baseline_state:
+                st.metric("Baseline", diag.baseline_state, f"was {prev.baseline_state}")
+            else:
+                st.metric("Baseline", diag.baseline_state, "unchanged")
+
+        # Top Z-score movers
+        if diag.z_scores and prev.z_scores:
+            deltas = []
+            for feat, z_now in diag.z_scores.items():
+                z_prev = prev.z_scores.get(feat)
+                now_nan = isinstance(z_now, float) and math.isnan(z_now)
+                prev_nan = z_prev is None or (isinstance(z_prev, float) and math.isnan(z_prev))
+                if not now_nan and not prev_nan:
+                    deltas.append((feat, z_prev, z_now, z_now - z_prev))
+
+            deltas.sort(key=lambda x: abs(x[3]), reverse=True)
+            top_movers = deltas[:3]
+
+            if top_movers:
+                mv_cols = st.columns(len(top_movers))
+                for i, (feat, z_prev, z_now, dz) in enumerate(top_movers):
+                    with mv_cols[i]:
+                        st.metric(
+                            feature_label(feat),
+                            f"Z = {z_now:+.2f}",
+                            f"{dz:+.2f}",
+                        )
 
     st.markdown("---")
 

@@ -3,12 +3,13 @@
 import math
 
 import streamlit as st
-from datetime import date
+from datetime import date, timedelta
 import plotly.graph_objects as go
 import pandas as pd
 
 from obsidian.dashboard.data import (
     get_cached_diagnostic,
+    get_historical_diagnostics,
     get_feature_weights,
     get_focus_diagnostics,
     feature_label,
@@ -137,6 +138,54 @@ def render(ticker: str, end_date: date) -> None:
         })
 
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+    # --- Feature Trend Sparklines ---
+    st.markdown("---")
+    st.markdown("### Feature Trends (last 21 days)")
+
+    hist = get_historical_diagnostics(ticker, end_date - timedelta(days=30), end_date)
+    hist_dates = sorted(hist.keys())
+
+    if len(hist_dates) >= 3:
+        scored_features = sorted(weights.keys())
+
+        # Build z-score time series per feature
+        spark_cols = st.columns(2)
+        for idx, feat in enumerate(scored_features):
+            dates_list = []
+            z_vals = []
+            for d in hist_dates:
+                z = hist[d].z_scores.get(feat)
+                if z is not None and not (isinstance(z, float) and math.isnan(z)):
+                    dates_list.append(d)
+                    z_vals.append(z)
+
+            with spark_cols[idx % 2]:
+                if len(z_vals) >= 2:
+                    latest_z = z_vals[-1]
+                    color = "#f44336" if latest_z > 0 else "#2196F3"
+                    fig_spark = go.Figure(go.Scatter(
+                        x=dates_list,
+                        y=z_vals,
+                        mode="lines+markers",
+                        line=dict(color=color, width=2),
+                        marker=dict(size=4, color=color),
+                        hovertemplate="%{x}<br>Z = %{y:.2f}<extra></extra>",
+                    ))
+                    fig_spark.add_hline(y=0, line_dash="dot", line_color="#999", opacity=0.5)
+                    fig_spark.update_layout(
+                        title=dict(text=f"{feature_label(feat)} (Z = {latest_z:+.2f})", font=dict(size=12)),
+                        height=120,
+                        margin=dict(l=10, r=10, t=30, b=10),
+                        xaxis=dict(showticklabels=False, showgrid=False),
+                        yaxis=dict(showticklabels=True, showgrid=True, tickfont=dict(size=9)),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig_spark, width="stretch")
+                else:
+                    st.caption(f"{feature_label(feat)}: insufficient data")
+    else:
+        st.caption("Need at least 3 cached dates for trend sparklines. Run diagnostics for more dates.")
 
     # --- Excluded / unweighted features ---
     if nan_features:
