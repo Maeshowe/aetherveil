@@ -85,6 +85,19 @@ python -m obsidian.cli diagnose SPY --format json
 python -m obsidian.cli version
 ```
 
+### Automated Daily Collection
+
+```bash
+# Run full pipeline once (all CORE + FOCUS tickers)
+python scripts/daily_run.py
+
+# Install cron job on Mac Mini (23:30 CET, Mon-Fri)
+bash scripts/setup_cron.sh
+
+# Verify cron
+crontab -l
+```
+
 ### Python API
 
 ```python
@@ -271,6 +284,9 @@ obsidian-mm/
 │       ├── clients/         # API clients (UW, Polygon, FMP, FRED)
 │       ├── config.py        # Settings
 │       └── cli.py           # CLI interface
+├── scripts/                 # Automation
+│   ├── daily_run.py           # Cron runner (full pipeline)
+│   └── setup_cron.sh          # Crontab installer
 ├── tests/                   # 504 tests
 ├── reference/               # Specifications
 ├── memory/                  # Persistent memory system
@@ -350,6 +366,7 @@ obsidian-mm/
 - [x] **Dashboard polish** — ETF-aware Focus Decomposition, FOCUS Regime Snapshot, Z-Score Cross-Reference
 - [x] IV Rank integration (replaced IV Skew), UW concurrency semaphore, OTC earnings filter
 - [x] Comprehensive test suite (504 tests)
+- [x] **Automated daily collection** — Cron runner for Mac Mini baseline accumulation (23:30 CET, Mon-Fri)
 
 ### 📋 Planned
 - [ ] Regime Transition Matrix (RTM)

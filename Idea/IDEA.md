@@ -327,3 +327,86 @@ Pass 2: Light Scan (~150 S&P 500 ticker)
 | 2 | `universe/events.py` | Earnings/macro calendar |
 | 4 (Interface) | Dashboard Focus Decomposition | CORE ETF → focus breakdown |
 
+---
+
+## Phase 6: Dashboard UX/UI — Publikálható Dashboard (Sessions 20+)
+
+> **Kontextus:** A Mac Mini naponta gyűjti az adatokat (21 nap kell a baseline-hoz). Addig a dashboard UX/UI-t finomítjuk, hogy az első valós adatoknál már publikálható legyen.
+
+### Cél
+
+A dashboard jelenleg **diagnosztikailag kész és pontos** — egy tapasztalt quant mindent kiolvas belőle. De a publikus launch-hoz szebb, informatívabb, könnyen értelmezhető felületet kell csinálni. A cél: **az első retail felhasználó megnyitja, és 10 másodperc alatt érti, mit lát.**
+
+### Jelenlegi állapot (v0.2.0)
+
+| Oldal | Állapot | Mi jó | Mi hiányzik |
+|-------|---------|-------|-------------|
+| **Daily State** | Működik | Regime badge, U gauge, z-score tábla, FOCUS decomp | Nincs "mi változott tegnap óta?", explanation nyers szöveg |
+| **Historical Regimes** | Működik | Timeline, distribution, transition matrix, FOCUS snapshot | Nincs score timeline, nincs dwell time statisztika |
+| **Drivers** | Működik | Bar chart + waterfall + FOCUS cross-ref | Waterfall redundáns, nincs feature trend |
+| **Baseline Status** | Működik | Per-feature quality audit, recommendations | Nincs observation count trend, nincs API health |
+
+### Prioritás 1 — Azonnal (vizuális tisztítás)
+
+| # | Feladat | Oldal | Becslés |
+|---|---------|-------|---------|
+| 1 | **Waterfall eltávolítása** — redundáns a bar chart mellett | Drivers | Kicsi |
+| 2 | **Explanation formázás** — szekciók, kiemelések, bulletpoints | Daily State | Kicsi |
+| 3 | **Tooltipek / info ikonok** — "Mi az a FOCUS?", "Mit jelent Γ⁻?" | Minden oldal | Kicsi |
+| 4 | **Focus tábla regime badge-ekkel** — ne csak szöveg, hanem színes pill | Daily State, Historical | Kicsi |
+
+### Prioritás 2 — Score és trend vizualizáció
+
+| # | Feladat | Oldal | Becslés |
+|---|---------|-------|---------|
+| 5 | **Score timeline chart** — dátum vs U_t percentile, regime szín overlay | Historical | Közepes |
+| 6 | **Feature trend sparklines** — mini chart az utolsó 21 napról a Drivers táblában | Drivers | Közepes |
+| 7 | **Regime dwell time** — átlagos napok rezsimentként, longest streak | Historical | Kicsi |
+| 8 | **"Mi változott?" összefoglaló** — tegnap vs ma: regime flip, top driver change | Daily State | Közepes |
+
+### Prioritás 3 — Landing / Overview oldal
+
+| # | Feladat | Oldal | Becslés |
+|---|---------|-------|---------|
+| 9 | **Overview page (ÚJ)** — minden CORE + FOCUS ticker egy áttekintő táblában | Új oldal | Nagy |
+|   | Oszlopok: Ticker, Regime (badge), U_t (szín), Top Driver, Baseline State | | |
+|   | Sorrendezés: U_t csökkenő (legfontosabb fent) | | |
+|   | FOCUS tickers ETF-csoportonként (SPY structural, QQQ structural, stress, event) | | |
+| 10 | **Regime heatmap** — naptári nézet: ticker × dátum, szín = regime | Új/Historical | Közepes |
+
+### Prioritás 4 — Adatminőség és UX
+
+| # | Feladat | Oldal | Becslés |
+|---|---------|-------|---------|
+| 11 | **Baseline observation count chart** — feature × napok → mikor lesz COMPLETE | Baseline Status | Közepes |
+| 12 | **Auto-populate history** — cached adatból 63 napos timeline automatikusan | Historical | Közepes |
+| 13 | **Responsive layout** — mobil-barát column stacking | Minden oldal | Közepes |
+| 14 | **Dark mode** — Streamlit theme config | Globális | Kicsi |
+
+### Nem csinálunk (határok)
+
+- **Nincs alert / notification** — nem küldünk emailt, Discord üzenetet
+- **Nincs custom watchlist UI** — a FOCUS automatikus, nem user-driven
+- **Nincs backtest / szimuláció** — ez diagnosztikai tool, nem strategy tester
+- **Nincs price chart** — tudatosan nem mutatunk árfolyamot (nem prediktív)
+- **Nincs user auth** — egyelőre single-user deployment
+
+### Sorrend
+
+```
+Session 20: Prioritás 1 (vizuális tisztítás) — #1-4
+Session 21: Prioritás 2 (trendek) — #5-8
+Session 22: Prioritás 3 (Overview page) — #9-10
+Session 23: Prioritás 4 (UX) — #11-14
+```
+
+A baseline adatok ~Session 23-ra lesznek készen (21 trading day). Addigra a dashboard publikálható állapotban lesz.
+
+### Design elvek
+
+1. **10 másodperces szabály** — bárki megnyitja, 10 mp-en belül érti a fő üzenetet
+2. **Progresszív részletesség** — Overview → Daily → Drivers → Baseline (egyre mélyebb)
+3. **Szín = jelentés** — regime szín konzisztens minden oldalon (Γ⁺ kék, Γ⁻ piros, DD lila, stb.)
+4. **Nincs clutter** — minden elem kérdésre válaszol, ha nem válaszol, kidobjuk
+5. **Diagnosztikai, nem prediktív** — sehol sem jelenik meg "buy", "sell", "target price"
+

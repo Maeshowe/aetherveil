@@ -18,9 +18,8 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 # Ensure project root is on sys.path so 'obsidian' is importable
@@ -37,10 +36,10 @@ except ImportError:
 from obsidian.pipeline.orchestrator import Orchestrator
 
 
-def setup_logging(log_dir: Path) -> None:
+def setup_logging(log_dir: Path, target_date: date) -> None:
     """Configure logging to both console and daily log file."""
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"daily_{date.today().isoformat()}.log"
+    log_file = log_dir / f"daily_{target_date.isoformat()}.log"
 
     logging.basicConfig(
         level=logging.INFO,
@@ -149,16 +148,16 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Setup
-    log_dir = PROJECT_ROOT / "logs"
-    setup_logging(log_dir)
-    logger = logging.getLogger(__name__)
-
-    # Parse date
+    # Parse date first (needed for log file name)
     if args.date:
         target_date = date.fromisoformat(args.date)
     else:
         target_date = date.today()
+
+    # Setup logging (uses target_date for log file name)
+    log_dir = PROJECT_ROOT / "logs"
+    setup_logging(log_dir, target_date)
+    logger = logging.getLogger(__name__)
 
     update_focus = not args.no_focus
 

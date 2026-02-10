@@ -73,6 +73,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fred_api_key: str | None` — Optional FRED API key
 - `fred_rate_limit: int = 5` — FRED requests/second
 
+### Added - Automation (Session 19)
+
+#### Daily Cron Runner
+- **`scripts/daily_run.py`** — Full two-pass pipeline runner for automated data collection
+  - Calls `Orchestrator.run_diagnostics()` with `update_focus=True`
+  - Per-day log files (`logs/daily_YYYY-MM-DD.log`)
+  - JSON result snapshots (`output/results_YYYY-MM-DD.json`)
+  - CLI args: `--date`, `--no-focus`, `--cache-dir`, `--output-dir`
+- **`scripts/setup_cron.sh`** — Crontab installer for Mac Mini
+  - Schedule: 23:30 CET, Mon-Fri (after US market close + dark pool stabilization)
+  - Auto-detects project root and venv path
+
 ### Added - Dashboard & Polish (Sessions 14-17)
 
 #### Live Testing Fixes
