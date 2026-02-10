@@ -51,6 +51,7 @@ class DiagnosticResult:
     baseline_state: str
     explanation: str
     ai_explanation: str | None = None
+    observation_counts: dict[str, int] | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -67,6 +68,7 @@ class DiagnosticResult:
             "baseline_state": self.baseline_state,
             "explanation": self.explanation,
             "ai_explanation": self.ai_explanation,
+            "observation_counts": self.observation_counts,
         }
 
 
@@ -494,7 +496,8 @@ class Processor:
             z_scores=z_scores_latest,
             raw_features=all_raw_features,
             baseline_state=baseline_state.value,
-            explanation=explanation_output.format_full()
+            explanation=explanation_output.format_full(),
+            observation_counts=feature_counts,
         )
 
         # AI Narrator enrichment (optional — never blocks pipeline)

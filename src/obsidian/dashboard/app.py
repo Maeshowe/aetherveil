@@ -13,6 +13,7 @@ from obsidian.dashboard.data import (
     diagnose_from_cache,
     run_full_pipeline,
     get_cached_diagnostic,
+    get_cached_date_range,
 )
 
 # Page configuration
@@ -36,7 +37,7 @@ st.markdown("""
         font-size: 1.6rem;
         font-weight: 800;
         letter-spacing: 0.18em;
-        color: #0d1117;
+        color: inherit;
     }
     .brand-tag {
         font-size: 0.85rem;
@@ -51,7 +52,7 @@ st.markdown("""
         margin: 0 0 1.4rem 0;
     }
     .metric-card {
-        background-color: #f0f2f6;
+        background-color: rgba(128, 128, 128, 0.1);
         padding: 1rem;
         border-radius: 0.5rem;
         margin-bottom: 1rem;
@@ -71,6 +72,11 @@ st.markdown("""
     .regime-distribution { background-color: #FF9800; color: white; }
     .regime-neutral { background-color: #9E9E9E; color: white; }
     .regime-undetermined { background-color: #607D8B; color: white; }
+    @media (max-width: 768px) {
+        .brand-bar { flex-direction: column; gap: 0.2rem; }
+        .brand-name { font-size: 1.2rem; }
+        .brand-tag { font-size: 0.75rem; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -106,12 +112,19 @@ with st.sidebar:
         help="Latest date for analysis"
     )
 
+    cached_range = get_cached_date_range(ticker)
+    default_start = cached_range[0] if cached_range[0] else end_date - timedelta(days=90)
+
     start_date = st.date_input(
         "Start Date",
-        value=end_date - timedelta(days=90),
+        value=default_start,
         max_value=end_date,
         help="Earliest date for analysis"
     )
+
+    if cached_range[0]:
+        n_cached = (cached_range[1] - cached_range[0]).days + 1
+        st.caption(f"Cached: {cached_range[0]} — {cached_range[1]} ({n_cached} dates)")
 
     if start_date > end_date:
         st.error("Start date must be before end date")
@@ -217,7 +230,7 @@ elif page == "Baseline Status":
 # Footer
 st.markdown("---")
 st.markdown("""
-<div style="text-align: center; color: #666; font-size: 0.9rem;">
+<div style="text-align: center; color: #8b949e; font-size: 0.9rem;">
     <p>OBSIDIAN MM &mdash; Diagnostic tool only. Not for trading signals or price predictions.</p>
 </div>
 """, unsafe_allow_html=True)

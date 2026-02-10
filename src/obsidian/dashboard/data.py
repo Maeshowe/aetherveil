@@ -210,6 +210,22 @@ def regime_badge_html(label: str | None) -> str:
     )
 
 
+def get_cached_date_count(ticker: str) -> int:
+    """Return number of cached data dates for a ticker (from ParquetStore)."""
+    orch = _get_orchestrator()
+    dates = _run_async(orch.processor.cache.list_dates(ticker, "bars"))
+    return len(dates)
+
+
+def get_cached_date_range(ticker: str) -> tuple[date | None, date | None]:
+    """Return (earliest, latest) cached date for a ticker."""
+    orch = _get_orchestrator()
+    dates = _run_async(orch.processor.cache.list_dates(ticker, "bars"))
+    if not dates:
+        return (None, None)
+    return (dates[0], dates[-1])
+
+
 def get_focus_diagnostics(target_date: date, etf: str | None = None) -> list[dict]:
     """Return FOCUS tickers with their cached diagnostics for cross-reference.
 
