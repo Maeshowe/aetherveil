@@ -31,6 +31,7 @@ env/
 .coverage
 htmlcov/
 .tox/
+reference/
 
 # IDEs
 .vscode/
