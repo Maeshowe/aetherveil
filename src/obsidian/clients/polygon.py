@@ -23,6 +23,15 @@ from typing import Any
 from obsidian.clients.base import BaseAsyncClient
 
 
+def _polygon_ticker(ticker: str) -> str:
+    """Normalize ticker for Polygon API.
+
+    Polygon uses dots for share classes (BRK.B), while other providers
+    and our internal representation use hyphens (BRK-B).
+    """
+    return ticker.upper().replace("-", ".")
+
+
 class PolygonClient(BaseAsyncClient):
     """Async client for Polygon.io API.
 
@@ -91,7 +100,7 @@ class PolygonClient(BaseAsyncClient):
         elif isinstance(date_to, date):
             date_to = date_to.isoformat()
 
-        endpoint = f"/v2/aggs/ticker/{ticker.upper()}/range/{multiplier}/day/{date_from}/{date_to}"
+        endpoint = f"/v2/aggs/ticker/{_polygon_ticker(ticker)}/range/{multiplier}/day/{date_from}/{date_to}"
         params = {"sort": sort, "limit": limit, "adjusted": "true"}
 
         return await self.get(endpoint, params=params)
@@ -111,7 +120,7 @@ class PolygonClient(BaseAsyncClient):
 
         API Docs: https://polygon.io/docs/stocks/get_v2_snapshot_locale_us_markets_stocks_tickers__stocksticker
         """
-        endpoint = f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker.upper()}"
+        endpoint = f"/v2/snapshot/locale/us/markets/stocks/tickers/{_polygon_ticker(ticker)}"
         return await self.get(endpoint)
 
     async def get_indices_snapshot(
@@ -166,7 +175,7 @@ class PolygonClient(BaseAsyncClient):
         if isinstance(target_date, date):
             target_date = target_date.isoformat()
 
-        endpoint = f"/v1/open-close/{ticker.upper()}/{target_date}"
+        endpoint = f"/v1/open-close/{_polygon_ticker(ticker)}/{target_date}"
         return await self.get(endpoint)
 
     async def get_last_trade(self, ticker: str) -> dict[str, Any]:
@@ -184,7 +193,7 @@ class PolygonClient(BaseAsyncClient):
 
         API Docs: https://polygon.io/docs/stocks/get_v2_last_trade__stocksticker
         """
-        endpoint = f"/v2/last/trade/{ticker.upper()}"
+        endpoint = f"/v2/last/trade/{_polygon_ticker(ticker)}"
         return await self.get(endpoint)
 
     async def get_market_status(self) -> dict[str, Any]:

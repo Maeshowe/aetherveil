@@ -5,7 +5,26 @@ from datetime import date
 import httpx
 import pytest
 
-from obsidian.clients.polygon import PolygonClient
+from obsidian.clients.polygon import PolygonClient, _polygon_ticker
+
+
+class TestPolygonTicker:
+    """Tests for Polygon ticker normalization."""
+
+    def test_normal_ticker_unchanged(self) -> None:
+        assert _polygon_ticker("AAPL") == "AAPL"
+
+    def test_hyphen_to_dot(self) -> None:
+        assert _polygon_ticker("BRK-B") == "BRK.B"
+
+    def test_hyphen_to_dot_lowercase(self) -> None:
+        assert _polygon_ticker("brk-b") == "BRK.B"
+
+    def test_multiple_hyphens(self) -> None:
+        assert _polygon_ticker("ADC-PA") == "ADC.PA"
+
+    def test_no_hyphen_uppercase(self) -> None:
+        assert _polygon_ticker("spy") == "SPY"
 
 
 class TestPolygonClient:
@@ -194,3 +213,29 @@ class TestPolygonClient:
 
         async with PolygonClient(api_key="secret_key_456") as client:
             await client.get_market_status()
+
+    @pytest.mark.asyncio
+    async def test_hyphenated_ticker_normalized(self, respx_mock):
+        """BRK-B should be converted to BRK.B in Polygon API URLs."""
+        respx_mock.get(
+            "https://api.polygon.io/v2/aggs/ticker/BRK.B/range/1/day/2024-01-01/2024-01-31"
+        ).mock(return_value=httpx.Response(200, json={"results": [{"c": 400.0}]}))
+
+        async with PolygonClient(api_key="test_key_123") as client:
+            result = await client.get_daily_bars(
+                ticker="BRK-B",
+                date_from="2024-01-01",
+                date_to="2024-01-31",
+            )
+            assert result["results"][0]["c"] == 400.0
+
+    @pytest.mark.asyncio
+    async def test_hyphenated_ticker_snapshot(self, respx_mock):
+        """BRK-B snapshot should use BRK.B in URL."""
+        respx_mock.get(
+            "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/BRK.B"
+        ).mock(return_value=httpx.Response(200, json={"ticker": {"ticker": "BRK.B"}}))
+
+        async with PolygonClient(api_key="test_key_123") as client:
+            result = await client.get_snapshot("BRK-B")
+            assert result["ticker"]["ticker"] == "BRK.B"

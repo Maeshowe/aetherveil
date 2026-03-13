@@ -98,9 +98,35 @@ def print_summary(results: dict, target_date: date) -> None:
             ticker, regime, score_str, available, total,
         )
 
+    # Baseline progress — computed from actual observation counts
+    baseline_min = 21
+    states = {"COMPLETE": 0, "PARTIAL": 0, "EMPTY": 0, "UND": 0}
+    min_obs = baseline_min  # track min across CORE tickers
+    for ticker in sorted(results.keys()):
+        diag = results[ticker]
+        bs = getattr(diag, "baseline_state", "UND")
+        states[bs] = states.get(bs, 0) + 1
+        obs = getattr(diag, "observation_counts", None)
+        if obs:
+            ticker_min = min(obs.values()) if obs.values() else 0
+            min_obs = min(min_obs, ticker_min)
+
+    complete = states.get("COMPLETE", 0)
+    partial = states.get("PARTIAL", 0)
+    total = len(results)
+
     logger.info("=" * 60)
-    logger.info("Done. Next valid baseline in %d+ more daily runs.",
-                max(0, 21 - 1))  # rough estimate
+    logger.info(
+        "Baseline: %d/%d COMPLETE, %d PARTIAL (need %d obs, min across tickers: %d)",
+        complete, total, partial, baseline_min, min_obs,
+    )
+    if min_obs < baseline_min:
+        logger.info(
+            "Next valid baseline in ~%d more daily runs.",
+            baseline_min - min_obs,
+        )
+    else:
+        logger.info("All baselines valid — full diagnostic accuracy.")
 
 
 def save_results(results: dict, target_date: date, output_dir: Path) -> None:
