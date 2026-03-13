@@ -23,6 +23,16 @@ from typing import Any
 from obsidian.clients.base import BaseAsyncClient
 
 
+def _uw_ticker(ticker: str) -> str:
+    """Normalize ticker for Unusual Whales API.
+
+    UW rejects hyphens in URL path segments (e.g., BRK-B → 422).
+    UW uses dots for share classes (BRK.B), similar to Polygon.
+    Dark pool endpoint is unaffected (uses query param, not path).
+    """
+    return ticker.upper().replace("-", ".")
+
+
 class UnusualWhalesClient(BaseAsyncClient):
     """Async client for Unusual Whales API.
 
@@ -107,7 +117,7 @@ class UnusualWhalesClient(BaseAsyncClient):
         if date_to:
             params["date_to"] = date_to.isoformat()
 
-        return await self.get(f"/stock/{ticker.upper()}/greek-exposure", params=params)
+        return await self.get(f"/stock/{_uw_ticker(ticker)}/greek-exposure", params=params)
 
     async def get_iv_rank(
         self,
@@ -137,7 +147,7 @@ class UnusualWhalesClient(BaseAsyncClient):
         if date_to:
             params["date_to"] = date_to.isoformat()
 
-        return await self.get(f"/stock/{ticker.upper()}/iv-rank", params=params)
+        return await self.get(f"/stock/{_uw_ticker(ticker)}/iv-rank", params=params)
 
     async def get_option_contracts(
         self,
@@ -167,7 +177,7 @@ class UnusualWhalesClient(BaseAsyncClient):
         if date_to:
             params["date_to"] = date_to.isoformat()
 
-        return await self.get(f"/stock/{ticker.upper()}/option-contracts", params=params)
+        return await self.get(f"/stock/{_uw_ticker(ticker)}/option-contracts", params=params)
 
     async def get_market_tide(
         self,

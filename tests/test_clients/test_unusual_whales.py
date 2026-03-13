@@ -5,7 +5,23 @@ from datetime import date
 import httpx
 import pytest
 
-from obsidian.clients.unusual_whales import UnusualWhalesClient
+from obsidian.clients.unusual_whales import UnusualWhalesClient, _uw_ticker
+
+
+class TestUWTicker:
+    """Tests for UW ticker normalization."""
+
+    def test_normal_ticker_unchanged(self) -> None:
+        assert _uw_ticker("AAPL") == "AAPL"
+
+    def test_hyphen_to_dot(self) -> None:
+        assert _uw_ticker("BRK-B") == "BRK.B"
+
+    def test_multi_hyphen(self) -> None:
+        assert _uw_ticker("CDR-PC") == "CDR.PC"
+
+    def test_lowercase(self) -> None:
+        assert _uw_ticker("brk-b") == "BRK.B"
 
 
 class TestUnusualWhalesClient:
@@ -180,3 +196,36 @@ class TestUnusualWhalesClient:
 
         async with UnusualWhalesClient(api_key="my_secret_key") as client:
             await client.get_market_tide()
+
+    @pytest.mark.asyncio
+    async def test_hyphenated_ticker_greeks(self, respx_mock):
+        """BRK-B should be converted to BRK.B in UW greek-exposure URL."""
+        respx_mock.get(
+            "https://api.unusualwhales.com/api/stock/BRK.B/greek-exposure"
+        ).mock(return_value=httpx.Response(200, json={"data": []}))
+
+        async with UnusualWhalesClient(api_key="test_key_123") as client:
+            result = await client.get_greek_exposure("BRK-B")
+            assert result == {"data": []}
+
+    @pytest.mark.asyncio
+    async def test_hyphenated_ticker_iv_rank(self, respx_mock):
+        """BRK-B should be converted to BRK.B in UW iv-rank URL."""
+        respx_mock.get(
+            "https://api.unusualwhales.com/api/stock/BRK.B/iv-rank"
+        ).mock(return_value=httpx.Response(200, json={"data": [{"iv_rank_1y": 0.5}]}))
+
+        async with UnusualWhalesClient(api_key="test_key_123") as client:
+            result = await client.get_iv_rank("BRK-B")
+            assert result["data"][0]["iv_rank_1y"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_hyphenated_ticker_option_contracts(self, respx_mock):
+        """CDR-PC should be converted to CDR.PC in UW option-contracts URL."""
+        respx_mock.get(
+            "https://api.unusualwhales.com/api/stock/CDR.PC/option-contracts"
+        ).mock(return_value=httpx.Response(200, json={"data": []}))
+
+        async with UnusualWhalesClient(api_key="test_key_123") as client:
+            result = await client.get_option_contracts("CDR-PC")
+            assert result == {"data": []}
