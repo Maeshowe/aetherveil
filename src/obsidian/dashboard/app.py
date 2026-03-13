@@ -239,6 +239,7 @@ with st.sidebar:
             "Historical Regimes",
             "Drivers & Contributors",
             "Baseline Status",
+            "Data Health",
         ],
         label_visibility="collapsed"
     )
@@ -278,6 +279,10 @@ elif page == "Drivers & Contributors":
 elif page == "Baseline Status":
     from obsidian.dashboard.views import baseline_status
     baseline_status.render(ticker, end_date)
+
+elif page == "Data Health":
+    from obsidian.dashboard.views import data_health
+    data_health.render()
 
 # Footer
 st.markdown("---")

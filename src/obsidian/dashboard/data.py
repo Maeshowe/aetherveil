@@ -8,7 +8,8 @@ import asyncio
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import streamlit as st
 
@@ -438,3 +439,135 @@ def get_focus_entries() -> list[dict]:
 
     entries.sort(key=lambda e: (reason_order.get(e["reason"], 9), e["ticker"]))
     return entries
+
+
+# --- Cache health (filesystem scan, no async needed) ---
+
+_EXPECTED_SOURCES = ["bars", "dark_pool", "greeks", "iv_rank", "quote"]
+_BASELINE_MIN = 21
+
+
+def _format_size(size_bytes: int) -> str:
+    """Human-readable file size."""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
+
+def _scan_ticker_dir(raw_dir: Path) -> dict[str, list[date]]:
+    """Scan a ticker's raw/ directory for per-source date lists."""
+    sources: dict[str, list[date]] = {}
+    if not raw_dir.exists():
+        return sources
+    for f in raw_dir.glob("*.parquet"):
+        try:
+            parts = f.stem.rsplit("_", 1)
+            source = parts[0]
+            dt = datetime.strptime(parts[1], "%Y-%m-%d").date()
+            sources.setdefault(source, []).append(dt)
+        except (ValueError, IndexError):
+            continue
+    for src in sources:
+        sources[src].sort()
+    return sources
+
+
+def get_cache_health_report() -> dict:
+    """Scan parquet cache and return structured health report.
+
+    Returns:
+        Dictionary with 'summary' and 'tickers' keys. Each ticker has
+        sources, date range, baseline state, gaps, size, etc.
+    """
+    orch = _get_orchestrator()
+    cache_dir = orch.processor.cache.base_path
+
+    if not cache_dir.exists():
+        return {"summary": {}, "tickers": {}}
+
+    tickers: dict[str, dict] = {}
+    total_files = 0
+    total_size = 0
+
+    ticker_dirs = sorted(
+        d for d in cache_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    )
+
+    for ticker_dir in ticker_dirs:
+        ticker = ticker_dir.name
+        raw_dir = ticker_dir / "raw"
+        if not raw_dir.exists():
+            continue
+
+        sources = _scan_ticker_dir(raw_dir)
+        if not sources:
+            continue
+
+        parquet_files = list(raw_dir.glob("*.parquet"))
+        file_count = len(parquet_files)
+        dir_size = sum(f.stat().st_size for f in parquet_files)
+        total_files += file_count
+        total_size += dir_size
+
+        all_dates = sorted({d for dates in sources.values() for d in dates})
+        first_date = all_dates[0] if all_dates else None
+        last_date = all_dates[-1] if all_dates else None
+
+        dp_count = len(sources.get("dark_pool", []))
+        bars_count = len(sources.get("bars", []))
+
+        # Gap detection (missing weekdays in bars range)
+        gaps: list[date] = []
+        if first_date and last_date and bars_count > 1:
+            bars_set = set(sources.get("bars", []))
+            current = first_date
+            while current <= last_date:
+                if current.weekday() < 5 and current not in bars_set:
+                    gaps.append(current)
+                current += timedelta(days=1)
+
+        is_core = ticker in CORE_TICKERS
+        missing_sources = sorted(set(_EXPECTED_SOURCES) - set(sources.keys()))
+
+        # Baseline state (based on dark pool — the sparse source)
+        if dp_count == 0:
+            bs = "EMPTY"
+        elif dp_count < _BASELINE_MIN:
+            bs = "PARTIAL"
+        else:
+            bs = "COMPLETE"
+
+        tickers[ticker] = {
+            "is_core": is_core,
+            "sources": {src: len(dates) for src, dates in sources.items()},
+            "first_date": first_date,
+            "last_date": last_date,
+            "bars_count": bars_count,
+            "dark_pool_count": dp_count,
+            "baseline_state": bs,
+            "missing_sources": missing_sources,
+            "gaps": gaps,
+            "file_count": file_count,
+            "size_bytes": dir_size,
+        }
+
+    core_count = sum(1 for v in tickers.values() if v["is_core"])
+    complete = sum(1 for v in tickers.values() if v["baseline_state"] == "COMPLETE")
+    partial = sum(1 for v in tickers.values() if v["baseline_state"] == "PARTIAL")
+
+    return {
+        "summary": {
+            "total_tickers": len(tickers),
+            "core_tickers": core_count,
+            "focus_tickers": len(tickers) - core_count,
+            "baseline_complete": complete,
+            "baseline_partial": partial,
+            "baseline_empty": len(tickers) - complete - partial,
+            "total_files": total_files,
+            "total_size": _format_size(total_size),
+        },
+        "tickers": tickers,
+    }
