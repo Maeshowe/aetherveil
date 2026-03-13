@@ -14,6 +14,9 @@ from obsidian.dashboard.data import (
     run_full_pipeline,
     get_cached_diagnostic,
     get_cached_date_range,
+    get_cached_dates,
+    batch_process_cached_dates,
+    batch_process_all_tickers,
 )
 
 # Page configuration
@@ -169,6 +172,55 @@ with st.sidebar:
             st.success(f"Done: {len(results)} tickers diagnosed")
         else:
             st.error("Full pipeline failed. Check logs.")
+
+    # --- Batch Processing ---
+    st.markdown("### Batch Processing")
+
+    do_batch_ticker = st.button(
+        "Process All Dates",
+        use_container_width=True,
+        help=f"Process all cached dates for {ticker} (no API calls)",
+    )
+    do_batch_all = st.button(
+        "All Tickers \u00d7 All Dates",
+        use_container_width=True,
+        help="Process all cached dates for all tickers (no API calls)",
+    )
+
+    if do_batch_ticker:
+        cached_dates = get_cached_dates(ticker)
+        filtered = [d for d in cached_dates if start_date <= d <= end_date]
+
+        if not filtered:
+            st.warning(f"No cached data for {ticker} in selected range.")
+        else:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def _update(current: int, total: int, msg: str) -> None:
+                progress_bar.progress(current / total)
+                status_text.text(f"Processing {current}/{total}: {msg}")
+
+            batch_results = batch_process_cached_dates(ticker, filtered, _update)
+
+            progress_bar.empty()
+            status_text.empty()
+            st.success(f"Done: {len(batch_results)} dates processed for {ticker}")
+
+    if do_batch_all:
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        def _update_all(current: int, total: int, msg: str) -> None:
+            progress_bar.progress(current / total if total > 0 else 1.0)
+            status_text.text(f"Processing {current}/{total}: {msg}")
+
+        all_results = batch_process_all_tickers(start_date, end_date, _update_all)
+
+        progress_bar.empty()
+        status_text.empty()
+        total_diags = sum(len(v) for v in all_results.values())
+        st.success(f"Done: {total_diags} diagnostics across {len(all_results)} tickers")
 
     # Status indicator
     diag = get_cached_diagnostic(ticker, end_date)

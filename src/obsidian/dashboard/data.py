@@ -6,6 +6,7 @@ Uses a thread-based async bridge to avoid event loop conflicts with Streamlit.
 
 import asyncio
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
@@ -208,6 +209,131 @@ def regime_badge_html(label: str | None) -> str:
         f'padding:2px 8px; border-radius:10px; font-weight:600; '
         f'font-size:0.85rem;">{short}</span>'
     )
+
+
+def get_cached_dates(ticker: str) -> list[date]:
+    """Return sorted list of dates with cached raw data for a ticker.
+
+    Uses 'bars' source as the canonical indicator — Polygon bars are
+    fetched for every ticker on every collection run.
+    """
+    orch = _get_orchestrator()
+    return _run_async(orch.processor.cache.list_dates(ticker, "bars"))
+
+
+def batch_process_cached_dates(
+    ticker: str,
+    dates: list[date],
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> dict[date, DiagnosticResult]:
+    """Process multiple cached dates for a single ticker.
+
+    Processes dates chronologically (important for baseline accumulation).
+    Skips dates already in session_state. No API calls — purely cache-based.
+
+    Args:
+        ticker: Symbol to process.
+        dates: Sorted list of dates to process.
+        progress_callback: Called with (current_idx, total, status_msg)
+            after each date, enabling st.progress() updates.
+
+    Returns:
+        Dict mapping date -> DiagnosticResult for successfully processed dates.
+    """
+    orch = _get_orchestrator()
+    results: dict[date, DiagnosticResult] = {}
+
+    for i, target_date in enumerate(dates):
+        cache_key = f"diag_{ticker}_{target_date.isoformat()}"
+
+        # Skip already-processed dates (idempotent)
+        if cache_key in st.session_state:
+            results[target_date] = st.session_state[cache_key]
+            if progress_callback:
+                progress_callback(i + 1, len(dates), f"{ticker} {target_date} (cached)")
+            continue
+
+        try:
+            result = _run_async(
+                orch.run_single_ticker(ticker, target_date, fetch_data=False)
+            )
+            st.session_state[cache_key] = result
+            results[target_date] = result
+        except Exception as e:
+            logger.warning("Failed to process %s on %s: %s", ticker, target_date, e)
+
+        if progress_callback:
+            progress_callback(i + 1, len(dates), f"{ticker} {target_date}")
+
+    return results
+
+
+def batch_process_all_tickers(
+    start_date: date,
+    end_date: date,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> dict[str, dict[date, DiagnosticResult]]:
+    """Process all cached dates for all available tickers.
+
+    Outer loop: tickers. Inner loop: dates (chronological per ticker).
+    Only processes dates that have cached raw data (bars source).
+
+    Args:
+        start_date: Filter dates from this date.
+        end_date: Filter dates up to this date.
+        progress_callback: Called with (current_step, total_steps, status_msg).
+
+    Returns:
+        Nested dict: ticker -> date -> DiagnosticResult.
+    """
+    tickers = get_available_tickers()
+    orch = _get_orchestrator()
+
+    # Discover all dates per ticker
+    ticker_dates: dict[str, list[date]] = {}
+    total_steps = 0
+    for t in tickers:
+        dates = _run_async(orch.processor.cache.list_dates(t, "bars"))
+        filtered = [d for d in dates if start_date <= d <= end_date]
+        if filtered:
+            ticker_dates[t] = filtered
+            total_steps += len(filtered)
+
+    if total_steps == 0:
+        return {}
+
+    all_results: dict[str, dict[date, DiagnosticResult]] = {}
+    current_step = 0
+
+    for ticker, dates in ticker_dates.items():
+        ticker_results: dict[date, DiagnosticResult] = {}
+
+        for target_date in dates:
+            cache_key = f"diag_{ticker}_{target_date.isoformat()}"
+            current_step += 1
+
+            if cache_key in st.session_state:
+                ticker_results[target_date] = st.session_state[cache_key]
+                if progress_callback:
+                    progress_callback(current_step, total_steps, f"{ticker} {target_date} (cached)")
+                continue
+
+            try:
+                result = _run_async(
+                    orch.run_single_ticker(ticker, target_date, fetch_data=False)
+                )
+                st.session_state[cache_key] = result
+                ticker_results[target_date] = result
+            except Exception as e:
+                logger.warning("Failed to process %s on %s: %s", ticker, target_date, e)
+
+            if progress_callback:
+                progress_callback(current_step, total_steps, f"{ticker} {target_date}")
+
+        if ticker_results:
+            all_results[ticker] = ticker_results
+
+    return all_results
 
 
 def get_cached_date_count(ticker: str) -> int:

@@ -138,6 +138,7 @@ During the first {_WINDOW} trading days, the system uses an **expanding window**
 
     # Gather all features (weighted + unweighted)
     all_feature_names = set((diag.z_scores or {}).keys()) | set(weights.keys())
+    per_feature_obs = obs_counts or {}
     features = []
     for name in sorted(all_feature_names):
         z_val = diag.z_scores.get(name)
@@ -150,24 +151,33 @@ During the first {_WINDOW} trading days, the system uses an **expanding window**
             "z_score": z_val,
             "weight": weight,
             "is_weighted": weight > 0,
+            "obs_count": per_feature_obs.get(name),
         })
 
     for f in features:
-        state_emoji = {"COMPLETE": "G", "EMPTY": "R"}.get(f["state"], "?")
-        state_color = {"COMPLETE": "green", "EMPTY": "red"}.get(f["state"], "gray")
-
         col1, col2, col3 = st.columns([3, 2, 5])
         with col1:
             st.markdown(f"**{f['label']}**")
         with col2:
-            st.text(f"State: {f['state']}")
+            obs = f["obs_count"]
+            if obs is not None:
+                st.text(f"{obs}/{_MIN_OBS} obs")
+            else:
+                st.text("No data")
         with col3:
             if f["state"] == "COMPLETE":
                 z_val = f["z_score"]
                 z_str = f"{z_val:+.2f}" if z_val is not None and not (isinstance(z_val, float) and math.isnan(z_val)) else "N/A"
                 st.success(f"Baseline usable -- Z = {z_str}, w = {f['weight']:.2f}")
             else:
-                if f["is_weighted"]:
+                obs = f["obs_count"]
+                if obs is not None and obs > 0:
+                    remaining = _MIN_OBS - obs
+                    st.warning(
+                        f"Need {remaining} more day{'s' if remaining != 1 else ''} "
+                        f"(w = {f['weight']:.2f})"
+                    )
+                elif f["is_weighted"]:
                     st.error(f"Excluded from scoring (weight = {f['weight']:.2f})")
                 else:
                     st.warning("Informational feature -- no data")
@@ -204,10 +214,23 @@ During the first {_WINDOW} trading days, the system uses an **expanding window**
     else:
         if empty_weighted:
             names = ", ".join(f["label"] for f in empty_weighted)
+            # Find max remaining days across excluded weighted features
+            remaining_days = [
+                _MIN_OBS - f["obs_count"]
+                for f in empty_weighted
+                if f["obs_count"] is not None and f["obs_count"] > 0
+            ]
+            eta_msg = ""
+            if remaining_days:
+                max_remaining = max(remaining_days)
+                eta_msg = (
+                    f"\n\n**Estimated**: ~{max_remaining} more trading day{'s' if max_remaining != 1 else ''} "
+                    f"of daily collection needed."
+                )
             st.warning(
                 f"**{len(empty_weighted)} weighted feature(s) excluded**: {names}\n\n"
                 "These features are excluded from unusualness scoring and may affect "
-                "regime classification. Check API connectivity and data availability."
+                f"regime classification.{eta_msg}"
             )
         if empty_unweighted:
             names = ", ".join(f["label"] for f in empty_unweighted)
