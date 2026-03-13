@@ -18,6 +18,7 @@ from datetime import date as date_type
 from pathlib import Path
 from typing import Optional
 
+from obsidian import __version__
 from obsidian.pipeline.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -168,7 +169,7 @@ def cmd_version(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success)
     """
-    print("OBSIDIAN MM v0.2.0")
+    print(f"OBSIDIAN MM v{__version__}")
     print("Market-Maker Regime Engine")
     print("https://github.com/Maeshowe/aetherveil")
     return 0

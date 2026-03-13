@@ -7,6 +7,7 @@ Run with:
 import streamlit as st
 from datetime import date, timedelta
 
+from obsidian import __version__
 from obsidian.dashboard.data import (
     get_available_tickers,
     fetch_and_diagnose,
@@ -231,8 +232,8 @@ with st.sidebar:
 
     # Page selection
     st.markdown("### Navigation")
-    page = st.radio(
-        "Select Page",
+    page = st.selectbox(
+        "Page",
         [
             "Overview",
             "Daily State",
@@ -241,18 +242,12 @@ with st.sidebar:
             "Baseline Status",
             "Data Health",
         ],
-        label_visibility="collapsed"
+        label_visibility="collapsed",
     )
 
     # Info
     st.markdown("---")
-    st.markdown("### About")
-    st.caption("""
-    **OBSIDIAN MM** analyzes market microstructure to classify
-    institutional and dealer behavior into explainable regimes.
-
-    **Version**: 0.2.0
-    """)
+    st.caption(f"**OBSIDIAN MM** v{__version__}")
 
 # Store selections in session state
 st.session_state['ticker'] = ticker

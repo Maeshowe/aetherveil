@@ -2,9 +2,14 @@
 
 from setuptools import find_packages, setup
 
+# Read version from package
+about = {}
+with open("src/obsidian/__init__.py") as f:
+    exec(f.read(), about)
+
 setup(
     name="obsidian-mm",
-    version="0.2.0",
+    version=about["__version__"],
     description="Market-Maker Regime Engine — Explainable microstructure diagnostics",
     author="AETHERVEIL",
     python_requires=">=3.12",
