@@ -337,6 +337,24 @@ def batch_process_all_tickers(
     return all_results
 
 
+def get_raw_dark_pool(ticker: str, start_date: date, end_date: date) -> "pd.DataFrame":
+    """Load raw dark pool data from cache and normalize to daily aggregates.
+
+    Returns DataFrame with columns: dark_volume, total_volume, block_count,
+    plus per-venue volume columns (e.g. UBSS_volume, CDRG_volume).
+    Index is date. Empty DataFrame if no data.
+    """
+    import pandas as pd
+
+    orch = _get_orchestrator()
+    raw = _run_async(orch.processor.cache.read_range(ticker, "dark_pool", start_date, end_date))
+    if raw.empty:
+        return pd.DataFrame()
+    # Reuse processor's normalization
+    normalized = orch.processor._normalize_dark_pool(raw, ticker)
+    return normalized
+
+
 def get_cached_date_count(ticker: str) -> int:
     """Return number of cached data dates for a ticker (from ParquetStore)."""
     orch = _get_orchestrator()

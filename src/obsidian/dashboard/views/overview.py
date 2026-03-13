@@ -5,6 +5,8 @@ import math
 import streamlit as st
 from datetime import date
 
+import plotly.graph_objects as go
+
 from obsidian.dashboard.data import (
     get_available_tickers,
     get_cached_diagnostic,
@@ -12,8 +14,25 @@ from obsidian.dashboard.data import (
     get_feature_weights,
     feature_label,
     regime_badge_html,
+    REGIME_COLORS,
 )
 from obsidian.universe.manager import CORE_TICKERS
+
+
+def _abs_z(diag, feature: str) -> float:
+    """Get absolute z-score for a feature, defaulting to 0.0 on NaN/missing."""
+    z = (diag.z_scores or {}).get(feature)
+    if z is None or (isinstance(z, float) and math.isnan(z)):
+        return 0.0
+    return abs(z)
+
+
+def _raw_val(diag, feature: str) -> float:
+    """Get raw feature value, defaulting to 0.0 on NaN/missing."""
+    v = (getattr(diag, "raw_features", None) or {}).get(feature)
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return 0.0
+    return float(v)
 
 
 def _score_color(pct: float | None) -> str:
@@ -146,6 +165,36 @@ Tickers without cached data appear dimmed at the bottom.
             "Use **Fetch + Run**, **Run (cached)**, or **Full Pipeline** in the sidebar."
         )
 
+    # --- Stress Alerts ---
+    _THRESHOLDS = {
+        "U >= 70": lambda d: d.score_percentile is not None and d.score_percentile >= 70,
+        "|Z_GEX| >= 2.0": lambda d: _abs_z(d, "gex") >= 2.0,
+        "DarkShare >= 0.65": lambda d: _raw_val(d, "dark_share") >= 0.65,
+        "|Z_block| >= 2.0": lambda d: _abs_z(d, "block_intensity") >= 2.0,
+    }
+
+    loaded = {t: d for t, d in diags.items() if d is not None}
+    alerts: list[dict] = []
+    for t, d in loaded.items():
+        triggered = [name for name, check in _THRESHOLDS.items() if check(d)]
+        if triggered:
+            alerts.append({"ticker": t, "diag": d, "triggers": triggered})
+
+    if alerts:
+        alerts.sort(key=lambda a: -(a["diag"].score_percentile or 0))
+        st.markdown("### Stress Alerts")
+        for alert in alerts:
+            d = alert["diag"]
+            badge = regime_badge_html(d.regime_label)
+            pct = d.score_percentile
+            pct_str = f"{pct:.1f}" if pct is not None else "N/A"
+            triggers_str = " | ".join(alert["triggers"])
+            st.markdown(
+                f"{badge} **{alert['ticker']}** — U = {pct_str} — {triggers_str}",
+                unsafe_allow_html=True,
+            )
+        st.markdown("---")
+
     # --- CORE Tickers ---
     core = [t for t in all_tickers if t in CORE_TICKERS]
     _render_ticker_table(core, diags, "CORE Tickers")
@@ -181,6 +230,94 @@ Tickers without cached data appear dimmed at the bottom.
     # Render stress + event group
     if stress_event:
         _render_ticker_table(stress_event, diags, "FOCUS — Stress & Event")
+
+    # --- Comparison Visualizations ---
+    if len(loaded) >= 2:
+        st.markdown("---")
+        st.markdown("### Comparison")
+
+        viz1, viz2 = st.columns(2)
+
+        # --- U Score Scatter (colored by regime) ---
+        with viz1:
+            st.markdown("#### U Score Scatter")
+            scatter_tickers = []
+            scatter_scores = []
+            scatter_colors = []
+            scatter_regimes = []
+            scatter_drivers = []
+
+            for t, d in sorted(loaded.items()):
+                if d.score_percentile is None:
+                    continue
+                short = (d.regime_label or "").split(" — ")[0].split(" ")[0].strip()
+                scatter_tickers.append(t)
+                scatter_scores.append(d.score_percentile)
+                scatter_colors.append(REGIME_COLORS.get(short, "#999"))
+                scatter_regimes.append(short)
+                scatter_drivers.append(_top_driver(d))
+
+            if scatter_tickers:
+                fig = go.Figure()
+                # Group by regime for legend
+                seen_regimes: dict[str, bool] = {}
+                for i, t in enumerate(scatter_tickers):
+                    regime = scatter_regimes[i]
+                    show_legend = regime not in seen_regimes
+                    seen_regimes[regime] = True
+                    fig.add_trace(go.Scatter(
+                        x=[scatter_scores[i]],
+                        y=[t],
+                        mode="markers",
+                        marker=dict(size=14, color=scatter_colors[i]),
+                        name=regime,
+                        showlegend=show_legend,
+                        legendgroup=regime,
+                        hovertemplate=(
+                            f"<b>{t}</b><br>"
+                            f"U = {scatter_scores[i]:.1f}<br>"
+                            f"Regime: {regime}<br>"
+                            f"Driver: {scatter_drivers[i]}"
+                            "<extra></extra>"
+                        ),
+                    ))
+                fig.add_vline(x=70, line_dash="dash", line_color="#f44336", opacity=0.5)
+                fig.update_layout(
+                    xaxis_title="U Percentile",
+                    xaxis=dict(range=[0, 105]),
+                    yaxis=dict(autorange="reversed"),
+                    height=max(250, len(scatter_tickers) * 25 + 80),
+                    margin=dict(l=10, r=10, t=10, b=40),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                )
+                st.plotly_chart(fig, width="stretch")
+
+        # --- Regime Distribution Pie ---
+        with viz2:
+            st.markdown("#### Regime Distribution")
+            regime_counts: dict[str, int] = {}
+            for d in loaded.values():
+                short = (d.regime_label or "UND").split(" — ")[0].split(" ")[0].strip()
+                regime_counts[short] = regime_counts.get(short, 0) + 1
+
+            labels = list(regime_counts.keys())
+            values = list(regime_counts.values())
+            colors = [REGIME_COLORS.get(r, "#999") for r in labels]
+
+            fig = go.Figure(go.Pie(
+                labels=labels,
+                values=values,
+                marker=dict(colors=colors),
+                textinfo="label+value",
+                hovertemplate="%{label}: %{value} ticker(s) (%{percent})<extra></extra>",
+                hole=0.4,
+            ))
+            fig.update_layout(
+                height=300,
+                margin=dict(l=10, r=10, t=10, b=10),
+                showlegend=False,
+            )
+            st.plotly_chart(fig, width="stretch")
 
     # --- Data Quality Notice ---
     st.markdown("---")

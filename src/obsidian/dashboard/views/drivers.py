@@ -12,6 +12,7 @@ from obsidian.dashboard.data import (
     get_historical_diagnostics,
     get_feature_weights,
     get_focus_diagnostics,
+    get_raw_dark_pool,
     feature_label,
 )
 from obsidian.universe.manager import CORE_TICKERS
@@ -265,6 +266,97 @@ def render(ticker: str, end_date: date) -> None:
 
             if len(focus_with_z) > 6:
                 st.caption(f"Showing 6 of {len(focus_with_z)} FOCUS tickers with z-scores.")
+
+    # --- Dark Pool Breakdown ---
+    st.markdown("---")
+    st.markdown("### Dark Pool Breakdown")
+
+    dp_data = get_raw_dark_pool(ticker, end_date - timedelta(days=90), end_date)
+
+    if dp_data.empty:
+        st.caption("No dark pool data cached for this ticker.")
+    else:
+        dp_col1, dp_col2 = st.columns(2)
+
+        # --- Venue Mix Pie (latest day) ---
+        with dp_col1:
+            st.markdown("#### Venue Distribution (Latest)")
+            venue_cols = [c for c in dp_data.columns if c.endswith("_volume") and c not in ("dark_volume", "total_volume")]
+            if venue_cols and len(dp_data) > 0:
+                latest = dp_data.iloc[-1]
+                venue_labels = [c.replace("_volume", "") for c in venue_cols]
+                venue_values = [float(latest[c]) for c in venue_cols]
+                # Filter out zero venues
+                filtered = [(l, v) for l, v in zip(venue_labels, venue_values) if v > 0]
+                if filtered:
+                    labels, values = zip(*filtered)
+                    fig = go.Figure(go.Pie(
+                        labels=list(labels),
+                        values=list(values),
+                        textinfo="label+percent",
+                        hovertemplate="%{label}: %{value:,.0f} shares (%{percent})<extra></extra>",
+                        hole=0.35,
+                    ))
+                    fig.update_layout(
+                        height=300,
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig, width="stretch")
+                else:
+                    st.caption("No venue breakdown available.")
+            else:
+                st.caption("No venue breakdown in cached data.")
+
+        # --- Dark Pool Share Timeline ---
+        with dp_col2:
+            st.markdown("#### Dark Pool Share Timeline")
+            if "dark_volume" in dp_data.columns and "total_volume" in dp_data.columns:
+                import numpy as np
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    dp_share = dp_data["dark_volume"] / dp_data["total_volume"]
+                dp_share = dp_share.replace([np.inf, -np.inf], np.nan).dropna()
+
+                if len(dp_share) >= 2:
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=dp_share.index,
+                        y=dp_share.values * 100,
+                        mode="lines+markers",
+                        line=dict(color="#9C27B0", width=2),
+                        marker=dict(size=5),
+                        hovertemplate="%{x}<br>DarkShare: %{y:.1f}%<extra></extra>",
+                    ))
+                    fig.add_hline(y=65, line_dash="dash", line_color="#f44336", opacity=0.5,
+                                  annotation_text="Stress (65%)")
+                    fig.update_layout(
+                        yaxis_title="Dark Pool Share (%)",
+                        height=300,
+                        margin=dict(l=10, r=10, t=10, b=40),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig, width="stretch")
+                else:
+                    st.caption("Need at least 2 days for timeline.")
+            else:
+                st.caption("Dark volume/total volume columns not available.")
+
+        # --- Block Trade Count Timeline ---
+        if "block_count" in dp_data.columns and len(dp_data) >= 2:
+            st.markdown("#### Block Trade Count")
+            fig = go.Figure(go.Bar(
+                x=dp_data.index,
+                y=dp_data["block_count"],
+                marker_color="#FF9800",
+                hovertemplate="%{x}<br>Block trades: %{y}<extra></extra>",
+            ))
+            fig.update_layout(
+                yaxis_title="Block Prints",
+                height=200,
+                margin=dict(l=10, r=10, t=10, b=40),
+                showlegend=False,
+            )
+            st.plotly_chart(fig, width="stretch")
 
     st.markdown("---")
     st.caption(
